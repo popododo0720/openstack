@@ -1,0 +1,61 @@
+# ======================
+# Logs
+# ======================
+*.log
+*.retry
+
+# ======================
+# Kubespray (자체 git repo)
+# ======================
+helm/kubespray/
+
+# ======================
+# Terraform
+# ======================
+terraform/**/.terraform/
+terraform/**/*.tfstate
+terraform/**/*.tfstate.*
+terraform/**/.terraform.lock.hcl
+
+# ======================
+# Ansible
+# ======================
+credentials/
+*.retry
+fact_cache/
+
+# ======================
+# Python
+# ======================
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ======================
+# OS / Editor
+# ======================
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# ======================
+# VM 이미지 / ISO (용량 큼)
+# ======================
+*.qcow2
+*.iso
+*.img
+
+# ======================
+# 시크릿 (절대 커밋 금지)
+# ======================
+*.pem
+*.key
+**/passwords.yml
+**/*secret*
+**/*credential*
+!.gitignore
