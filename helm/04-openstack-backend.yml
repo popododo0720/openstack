@@ -5,7 +5,7 @@
   become: true
   vars:
     openstack_release: "2025.1"
-    features: "2025.1 ubuntu_noble"
+    features: "2025.1 ubuntu_noble tls"
     overrides_dir: /root/overrides
     overrides_url: https://opendev.org/openstack/openstack-helm/raw/branch/master/values_overrides
   environment:
