@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+KUBESPRAY_DIR="${SCRIPT_DIR}/kubespray"
 
 # SSH 대기
 echo "helm1 SSH 대기..."
@@ -9,8 +10,9 @@ until sshpass -p 'root' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root
 done
 echo "SSH OK"
 
-# kubespray 실행
+# kubespray 디렉토리에서 실행 (ansible.cfg 필요)
+cd "${KUBESPRAY_DIR}"
 ansible-playbook \
-    -i "${SCRIPT_DIR}/kubespray/inventory/helm-cluster/inventory.ini" \
-    "${SCRIPT_DIR}/kubespray/cluster.yml" \
+    -i inventory/helm-cluster/inventory.ini \
+    cluster.yml \
     -b 2>&1 | tee -a "${SCRIPT_DIR}/ansible.log"
