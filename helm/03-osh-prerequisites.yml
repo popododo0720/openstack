@@ -1,0 +1,178 @@
+---
+- name: OpenStack-Helm 사전 요구사항 배포
+  hosts: helm1
+  gather_facts: false
+  become: true
+  tasks:
+    - name: OpenStack-Helm 저장소 추가
+      shell: helm repo add openstack-helm https://tarballs.opendev.org/openstack/openstack-helm --force-update
+      changed_when: true
+
+    - name: OSH Helm 플러그인 설치
+      shell: helm plugin install https://opendev.org/openstack/openstack-helm-plugin.git
+      args:
+        creates: /root/.local/share/helm/plugins/openstack-helm-plugin
+      register: plugin_install
+      failed_when: plugin_install.rc != 0 and 'already exists' not in plugin_install.stderr
+      changed_when: plugin_install.rc == 0
+
+    - name: HAProxy Ingress Helm 저장소 추가
+      shell: helm repo add haproxy-ingress https://haproxy-ingress.github.io/charts --force-update
+      changed_when: true
+
+    - name: Helm 저장소 업데이트
+      shell: helm repo update
+      changed_when: false
+
+    - name: HAProxy Ingress 배포 (ClusterIP - 외부 LB 불필요)
+      shell: >
+        helm upgrade --install haproxy-ingress haproxy-ingress/haproxy-ingress
+        --version 0.15.0
+        --namespace=openstack
+        --set controller.kind=Deployment
+        --set controller.ingressClassResource.enabled=true
+        --set controller.ingressClass=ingress-openstack
+        --set controller.podLabels.app=ingress-api
+        --set controller.service.type=ClusterIP
+      changed_when: true
+
+    - name: Ingress 파드 준비 대기
+      shell: >
+        kubectl -n openstack wait --for=condition=Ready pods
+        -l app.kubernetes.io/name=haproxy-ingress --timeout=300s
+      register: ingress_wait
+      retries: 10
+      delay: 10
+      until: ingress_wait.rc == 0
+      changed_when: false
+
+    # --- MetalLB 설정 (kubespray가 생성한 primary 풀 패치) ---
+    - name: MetalLB IP 풀 패치 (192.168.0.59-192.168.0.60)
+      shell: |
+        kubectl patch ipaddresspool primary -n metallb-system --type=merge -p '
+        {
+          "spec": {
+            "addresses": ["192.168.0.59-192.168.0.60"]
+          }
+        }'
+      changed_when: true
+
+    - name: MetalLB L2Advertisement 설정 (enp6s0 인터페이스 지정)
+      shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: metallb.io/v1beta1
+        kind: L2Advertisement
+        metadata:
+          name: primary
+          namespace: metallb-system
+        spec:
+          ipAddressPools:
+            - primary
+          interfaces:
+            - enp6s0
+        EOF
+      changed_when: true
+
+    # --- OpenStack API LoadBalancer ---
+    - name: OpenStack API LoadBalancer 서비스 생성 (192.168.0.59)
+      shell: |
+        cat <<'SVCEOF' | kubectl apply -f -
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: public-openstack
+          namespace: openstack
+          annotations:
+            metallb.universe.tf/loadBalancerIPs: "192.168.0.59"
+        spec:
+          type: LoadBalancer
+          selector:
+            app: ingress-api
+          ports:
+            - name: http
+              port: 80
+              targetPort: 80
+              protocol: TCP
+            - name: https
+              port: 443
+              targetPort: 443
+              protocol: TCP
+        SVCEOF
+      changed_when: true
+
+    # --- TLS: Self-signed CA + ClusterIssuer (cert-manager 활용) ---
+    # ClusterIssuer는 cert-manager 네임스페이스(기본: cert-manager)의 시크릿만 참조 가능
+    # 따라서 CA Certificate를 cert-manager 네임스페이스에 생성
+    - name: cert-manager 네임스페이스에 Self-signed Issuer 생성
+      shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: cert-manager.io/v1
+        kind: Issuer
+        metadata:
+          name: self-signed
+          namespace: cert-manager
+        spec:
+          selfSigned: {}
+        EOF
+      changed_when: true
+
+    - name: cert-manager 네임스페이스에 CA 인증서 생성
+      shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: cert-manager.io/v1
+        kind: Certificate
+        metadata:
+          name: openstack-ca
+          namespace: cert-manager
+        spec:
+          isCA: true
+          commonName: openstack-ca
+          secretName: openstack-ca-secret
+          duration: 87600h
+          renewBefore: 720h
+          privateKey:
+            algorithm: RSA
+            size: 4096
+          issuerRef:
+            name: self-signed
+            kind: Issuer
+        EOF
+      changed_when: true
+
+    - name: CA 인증서 발급 대기
+      shell: >
+        kubectl -n cert-manager wait --for=condition=Ready certificate/openstack-ca --timeout=120s
+      retries: 5
+      delay: 10
+      register: ca_cert_wait
+      until: ca_cert_wait.rc == 0
+      changed_when: false
+
+    - name: ClusterIssuer 생성 (ca-issuer - 모든 OSH 차트가 참조)
+      shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: cert-manager.io/v1
+        kind: ClusterIssuer
+        metadata:
+          name: ca-issuer
+        spec:
+          ca:
+            secretName: openstack-ca-secret
+        EOF
+      changed_when: true
+
+    # --- Ceph Adapter Rook ---
+    - name: Ceph Adapter Rook 배포
+      shell: >
+        helm upgrade --install ceph-adapter-rook openstack-helm/ceph-adapter-rook
+        --namespace=openstack
+        --set ceph_cluster_namespace=rook-ceph
+      changed_when: true
+
+    - name: openstack 네임스페이스 파드 대기
+      shell: helm osh wait-for-pods openstack
+      register: osh_wait
+      retries: 30
+      delay: 10
+      until: osh_wait.rc == 0
+      changed_when: false

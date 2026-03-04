@@ -1,0 +1,37 @@
+---
+- name: Kubernetes 사전 준비
+  hosts: helm1
+  gather_facts: false
+  become: true
+  tasks:
+    - name: 노드 레이블 설정 - openstack-control-plane
+      shell: kubectl label nodes --all openstack-control-plane=enabled --overwrite
+      changed_when: true
+
+    - name: 노드 레이블 설정 - openstack-compute-node
+      shell: kubectl label nodes --all openstack-compute-node=enabled --overwrite
+      changed_when: true
+
+    - name: 노드 레이블 설정 - openvswitch
+      shell: kubectl label nodes --all openvswitch=enabled --overwrite
+      changed_when: true
+
+    - name: 노드 레이블 설정 - linuxbridge
+      shell: kubectl label nodes --all linuxbridge=enabled --overwrite
+      changed_when: true
+
+    - name: 노드 레이블 설정 - openstack-network-node
+      shell: kubectl label nodes --all openstack-network-node=enabled --overwrite
+      changed_when: true
+
+    - name: 노드 레이블 설정 - l3-agent
+      shell: kubectl label nodes --all l3-agent=enabled --overwrite
+      changed_when: true
+
+    - name: openstack 네임스페이스 생성
+      shell: kubectl create namespace openstack --dry-run=client -o yaml | kubectl apply -f -
+      changed_when: false
+
+    - name: rook-ceph 네임스페이스 생성
+      shell: kubectl create namespace rook-ceph --dry-run=client -o yaml | kubectl apply -f -
+      changed_when: false

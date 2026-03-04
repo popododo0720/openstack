@@ -1,0 +1,113 @@
+---
+- name: Rook-Ceph 스토리지 배포
+  hosts: helm1
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Rook Helm 저장소 추가
+      shell: helm repo add rook-release https://charts.rook.io/release --force-update
+      changed_when: true
+
+    - name: Helm 저장소 업데이트
+      shell: helm repo update
+      changed_when: false
+
+    - name: Rook-Ceph 오퍼레이터 배포
+      shell: >
+        helm upgrade --install rook-ceph rook-release/rook-ceph
+        --version v1.19.2
+        --namespace rook-ceph
+        --set csi.cephFSPlugin.enabled=false
+      changed_when: true
+
+    - name: Rook-Ceph 오퍼레이터 파드 대기
+      shell: >
+        kubectl -n rook-ceph wait --for=condition=Ready pods
+        -l app=rook-ceph-operator --timeout=300s
+      register: operator_wait
+      retries: 10
+      delay: 15
+      until: operator_wait.rc == 0
+      changed_when: false
+
+    - name: Rook CephCluster values 파일 생성
+      copy:
+        dest: /tmp/rook-cluster-values.yaml
+        content: |
+          operatorNamespace: rook-ceph
+          cephClusterSpec:
+            mon:
+              count: 1
+              allowMultiplePerNode: true
+            mgr:
+              count: 1
+              allowMultiplePerNode: true
+            dashboard:
+              enabled: false
+            storage:
+              useAllNodes: true
+              useAllDevices: false
+              devices:
+                - name: "vdb"
+            cephConfig:
+              global:
+                osd_pool_default_size: "1"
+                osd_pool_default_min_size: "1"
+                mon_warn_on_pool_no_redundancy: "false"
+          cephBlockPools:
+            - name: ceph-blockpool
+              spec:
+                replicated:
+                  size: 1
+              storageClass:
+                name: general
+                enabled: true
+                isDefault: true
+                reclaimPolicy: Delete
+                allowVolumeExpansion: true
+                parameters:
+                  csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
+                  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+                  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-rbd-provisioner
+                  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+                  csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
+                  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+          toolbox:
+            enabled: true
+          cephFileSystems: []
+          cephObjectStores: []
+
+    - name: Rook CephCluster 배포
+      shell: >
+        helm upgrade --install rook-ceph-cluster rook-release/rook-ceph-cluster
+        --version v1.19.2
+        --namespace rook-ceph
+        -f /tmp/rook-cluster-values.yaml
+      changed_when: true
+
+    - name: OSD 파드 준비 대기
+      shell: |
+        timeout=300
+        interval=5
+        elapsed=0
+        while [ $elapsed -lt $timeout ]; do
+          if kubectl get pods -n rook-ceph -l app=rook-ceph-osd --no-headers 2>/dev/null | grep -q Running; then
+            echo "OSD pod is running"
+            exit 0
+          fi
+          sleep $interval
+          elapsed=$((elapsed + interval))
+        done
+        echo "Timeout waiting for OSD pod"
+        exit 1
+      register: osd_wait
+      changed_when: false
+
+    - name: CephCluster 상태 확인
+      shell: kubectl get cephcluster -n rook-ceph
+      register: ceph_status
+      changed_when: false
+
+    - name: CephCluster 상태 출력
+      debug:
+        var: ceph_status.stdout_lines

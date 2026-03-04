@@ -1,0 +1,238 @@
+---
+- name: OpenStack 핵심 서비스 배포
+  hosts: helm1
+  gather_facts: false
+  become: true
+  vars:
+    openstack_release: "2025.1"
+    features: "2025.1 ubuntu_noble ovn tls"
+    overrides_dir: /root/overrides
+    overrides_url: https://opendev.org/openstack/openstack-helm/raw/branch/master/values_overrides
+    provider_interface: enp4s0
+  environment:
+    OPENSTACK_RELEASE: "{{ openstack_release }}"
+    FEATURES: "{{ features }}"
+    OVERRIDES_DIR: "{{ overrides_dir }}"
+    OVERRIDES_URL: "{{ overrides_url }}"
+  tasks:
+    - name: 핵심 차트 값 오버라이드 다운로드 (tls 포함)
+      shell: "helm osh get-values-overrides -d -u {{ overrides_url }} -p {{ overrides_dir }} -c {{ item }} {{ features }}"
+      loop:
+        - keystone
+        - heat
+        - glance
+        - cinder
+        - openvswitch
+        - ovn
+        - libvirt
+        - placement
+        - nova
+        - neutron
+      changed_when: false
+
+    # --- Keystone (admin: coremax / coremax1@#) ---
+    - name: Keystone 오버라이드 디렉토리 생성
+      file:
+        path: "{{ overrides_dir }}/keystone"
+        state: directory
+        mode: "0755"
+
+    - name: Keystone 관리자 계정 오버라이드 생성 (coremax)
+      copy:
+        dest: "{{ overrides_dir }}/keystone/keystone_admin.yaml"
+        content: |
+          endpoints:
+            identity:
+              auth:
+                admin:
+                  username: coremax
+                  password: "coremax1@#"
+
+    - name: Keystone 배포
+      shell: >
+        helm upgrade --install keystone openstack-helm/keystone
+        --namespace=openstack
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c keystone keystone_admin {{ features }})
+      changed_when: true
+
+    - name: Keystone 파드 대기
+      shell: helm osh wait-for-pods openstack
+      retries: 30
+      delay: 10
+      register: result
+      until: result.rc == 0
+      changed_when: false
+
+    # --- Heat ---
+    - name: Heat 배포
+      shell: >
+        helm upgrade --install heat openstack-helm/heat
+        --namespace=openstack
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c heat {{ features }})
+      changed_when: true
+
+    - name: Heat 파드 대기
+      shell: helm osh wait-for-pods openstack
+      retries: 30
+      delay: 10
+      register: result
+      until: result.rc == 0
+      changed_when: false
+
+    # --- Glance (PVC 스토리지) ---
+    - name: Glance 오버라이드 디렉토리 생성
+      file:
+        path: "{{ overrides_dir }}/glance"
+        state: directory
+        mode: "0755"
+
+    - name: Glance PVC 스토리지 오버라이드 생성
+      copy:
+        dest: "{{ overrides_dir }}/glance/glance_pvc_storage.yaml"
+        content: |
+          storage: pvc
+          volume:
+            class_name: general
+            size: 10Gi
+
+    - name: Glance 배포
+      shell: >
+        helm upgrade --install glance openstack-helm/glance
+        --namespace=openstack
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c glance glance_pvc_storage {{ features }})
+      changed_when: true
+
+    - name: Glance 파드 대기
+      shell: helm osh wait-for-pods openstack
+      retries: 30
+      delay: 10
+      register: result
+      until: result.rc == 0
+      changed_when: false
+
+    # --- Cinder ---
+    - name: Cinder 배포
+      shell: >
+        helm upgrade --install cinder openstack-helm/cinder
+        --namespace=openstack
+        --timeout=600s
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c cinder {{ features }})
+      changed_when: true
+
+    - name: Cinder 파드 대기
+      shell: helm osh wait-for-pods openstack
+      retries: 30
+      delay: 10
+      register: result
+      until: result.rc == 0
+      changed_when: false
+
+    # --- Openvswitch (OVN 데이터플레인으로 유지) ---
+    - name: Openvswitch 배포 (OVN 데이터플레인)
+      shell: >
+        helm upgrade --install openvswitch openstack-helm/openvswitch
+        --namespace=openstack
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c openvswitch {{ features }})
+      changed_when: true
+
+    - name: Openvswitch 파드 대기
+      shell: helm osh wait-for-pods openstack
+      retries: 30
+      delay: 10
+      register: result
+      until: result.rc == 0
+      changed_when: false
+
+    # --- OVN (ovsdb-nb, ovsdb-sb, northd, ovn-controller) ---
+    - name: OVN 배포
+      shell: >
+        helm upgrade --install ovn openstack-helm/ovn
+        --namespace=openstack
+        --set conf.ovn_bridge_mappings=public:br-ex
+        --set conf.auto_bridge_add.br-ex={{ provider_interface }}
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c ovn {{ features }})
+      changed_when: true
+
+    - name: OVN 파드 대기
+      shell: helm osh wait-for-pods openstack
+      retries: 30
+      delay: 10
+      register: result
+      until: result.rc == 0
+      changed_when: false
+
+    # --- Libvirt (OVN override로 OVS agent 의존성 제거됨) ---
+    - name: Libvirt 배포
+      shell: >
+        helm upgrade --install libvirt openstack-helm/libvirt
+        --namespace=openstack
+        --set conf.ceph.enabled=true
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c libvirt {{ features }})
+      changed_when: true
+
+    # --- Placement ---
+    - name: Placement 배포
+      shell: >
+        helm upgrade --install placement openstack-helm/placement
+        --namespace=openstack
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c placement {{ features }})
+      changed_when: true
+
+    # --- Nova (overcommit 해제: allocation_ratio 전부 1.0) ---
+    - name: Nova 오버라이드 디렉토리 생성
+      file:
+        path: "{{ overrides_dir }}/nova"
+        state: directory
+        mode: "0755"
+
+    - name: Nova overcommit 해제 오버라이드 생성
+      copy:
+        dest: "{{ overrides_dir }}/nova/nova_no_overcommit.yaml"
+        content: |
+          conf:
+            nova:
+              DEFAULT:
+                cpu_allocation_ratio: "1.0"
+                ram_allocation_ratio: "1.0"
+                disk_allocation_ratio: "1.0"
+
+    - name: Nova 배포
+      shell: >
+        helm upgrade --install nova openstack-helm/nova
+        --namespace=openstack
+        --set bootstrap.wait_for_computes.enabled=true
+        --set conf.ceph.enabled=true
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c nova nova_no_overcommit {{ features }})
+      changed_when: true
+
+    # --- Neutron (OVN 모드) ---
+    - name: Neutron 오버라이드 디렉토리 생성
+      file:
+        path: "{{ overrides_dir }}/neutron"
+        state: directory
+        mode: "0755"
+
+    - name: Neutron provider 오버라이드 생성 (OVN용)
+      copy:
+        dest: "{{ overrides_dir }}/neutron/neutron_simple.yaml"
+        content: |
+          conf:
+            plugins:
+              ml2_conf:
+                ml2_type_flat:
+                  flat_networks: public
+
+    - name: Neutron 배포
+      shell: >
+        helm upgrade --install neutron openstack-helm/neutron
+        --namespace=openstack
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c neutron neutron_simple {{ features }})
+      changed_when: true
+
+    - name: 전체 OpenStack 파드 대기
+      shell: helm osh wait-for-pods openstack
+      retries: 60
+      delay: 15
+      register: result
+      until: result.rc == 0
+      changed_when: false

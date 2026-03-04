@@ -1,0 +1,77 @@
+---
+- name: OpenStack 백엔드 서비스 배포
+  hosts: helm1
+  gather_facts: false
+  become: true
+  vars:
+    openstack_release: "2025.1"
+    features: "2025.1 ubuntu_noble"
+    overrides_dir: /root/overrides
+    overrides_url: https://opendev.org/openstack/openstack-helm/raw/branch/master/values_overrides
+  environment:
+    OPENSTACK_RELEASE: "{{ openstack_release }}"
+    FEATURES: "{{ features }}"
+    OVERRIDES_DIR: "{{ overrides_dir }}"
+    OVERRIDES_URL: "{{ overrides_url }}"
+  tasks:
+    - name: 오버라이드 디렉토리 생성
+      file:
+        path: "{{ overrides_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: 백엔드 차트 값 오버라이드 다운로드
+      shell: "helm osh get-values-overrides -d -u {{ overrides_url }} -p {{ overrides_dir }} -c {{ item }} {{ features }}"
+      loop:
+        - rabbitmq
+        - mariadb
+        - memcached
+      changed_when: false
+
+    - name: RabbitMQ 배포
+      shell: >
+        helm upgrade --install rabbitmq openstack-helm/rabbitmq
+        --namespace=openstack
+        --set pod.replicas.server=1
+        --timeout=600s
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c rabbitmq {{ features }})
+      changed_when: true
+
+    - name: RabbitMQ 파드 대기
+      shell: helm osh wait-for-pods openstack
+      retries: 30
+      delay: 10
+      register: result
+      until: result.rc == 0
+      changed_when: false
+
+    - name: MariaDB 배포
+      shell: >
+        helm upgrade --install mariadb openstack-helm/mariadb
+        --namespace=openstack
+        --set pod.replicas.server=1
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c mariadb {{ features }})
+      changed_when: true
+
+    - name: MariaDB 파드 대기
+      shell: helm osh wait-for-pods openstack
+      retries: 30
+      delay: 10
+      register: result
+      until: result.rc == 0
+      changed_when: false
+
+    - name: Memcached 배포
+      shell: >
+        helm upgrade --install memcached openstack-helm/memcached
+        --namespace=openstack
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c memcached {{ features }})
+      changed_when: true
+
+    - name: Memcached 파드 대기
+      shell: helm osh wait-for-pods openstack
+      retries: 30
+      delay: 10
+      register: result
+      until: result.rc == 0
+      changed_when: false

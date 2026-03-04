@@ -1,0 +1,13 @@
+---
+- name: OpenStack-Helm 전체 배포
+  import_playbook: 01-k8s-prerequisites.yml
+
+- import_playbook: 02-rook-ceph.yml
+
+- import_playbook: 03-osh-prerequisites.yml
+
+- import_playbook: 04-openstack-backend.yml
+
+- import_playbook: 05-openstack-core.yml
+
+- import_playbook: 06-openstack-extra.yml
