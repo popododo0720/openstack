@@ -1,0 +1,426 @@
+---
+# 14-after-deploy.yml
+# kolla-ansible deploy/post-deploy 이후 수동 설정
+# 사용법: ansible-playbook -i inventory.ini 14-after-deploy.yml
+
+- name: "Post-deploy: Octavia amphora 이미지 등록"
+  hosts: stack1
+  become: yes
+
+  vars:
+    amphora_image_url: "https://tarballs.opendev.org/openstack/octavia/test-images/test-only-amphora-x64-haproxy-ubuntu-jammy.qcow2"
+    amphora_image_file: "/tmp/amphora-x64-haproxy.qcow2"
+    amphora_image_name: "amphora-x64-haproxy"
+    amphora_image_tag: "amphora"
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    octavia_openrc: "/etc/kolla/octavia-openrc.sh"
+
+  tasks:
+    # -------------------------------------------
+    # 사전 확인
+    # -------------------------------------------
+    - name: "octavia-openrc.sh 존재 확인"
+      stat:
+        path: "{{ octavia_openrc }}"
+      register: openrc_check
+
+    - name: "octavia-openrc.sh 없으면 실패"
+      fail:
+        msg: "{{ octavia_openrc }} 없음. kolla-ansible post-deploy 먼저 실행하세요."
+      when: not openrc_check.stat.exists
+
+    - name: "octavia 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ octavia_openrc }} | cut -d\"'\" -f2"
+      register: octavia_pw
+      changed_when: false
+
+    - name: "기존 amphora 이미지 확인"
+      shell: |
+        docker exec glance_api openstack           --os-auth-url {{ os_auth_url }}           --os-project-name service           --os-username octavia           --os-password '{{ octavia_pw.stdout }}'           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           image list --tag {{ amphora_image_tag }} -f value -c ID
+      register: existing_image
+      changed_when: false
+
+    - name: "amphora 이미지 이미 존재 — 스킵"
+      debug:
+        msg: "amphora 이미지 이미 등록됨: {{ existing_image.stdout }}"
+      when: existing_image.stdout | length > 0
+
+    # -------------------------------------------
+    # 이미지 다운로드 및 업로드
+    # -------------------------------------------
+    - name: "amphora 이미지 다운로드 (약 500MB, 수 분 소요)"
+      shell:
+        wget -q -O /tmp/amphora-x64-haproxy.qcow2 "https://tarballs.opendev.org/openstack/octavia/test-images/test-only-amphora-x64-haproxy-ubuntu-jammy.qcow2"
+      when: existing_image.stdout | length == 0
+
+    - name: "이미지를 glance_api 컨테이너로 복사"
+      shell: "docker cp {{ amphora_image_file }} glance_api:/tmp/amphora.qcow2"
+      when: existing_image.stdout | length == 0
+
+    - name: "Glance에 amphora 이미지 업로드"
+      shell: |
+        docker exec glance_api openstack           --os-auth-url {{ os_auth_url }}           --os-project-name service           --os-username octavia           --os-password '{{ octavia_pw.stdout }}'           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           image create {{ amphora_image_name }}             --container-format bare             --disk-format qcow2             --private             --tag {{ amphora_image_tag }}             --file /tmp/amphora.qcow2             --property hw_architecture=x86_64             --property hw_rng_model=virtio
+      when: existing_image.stdout | length == 0
+      register: upload_result
+
+    - name: "업로드 결과"
+      debug:
+        msg: "{{ upload_result.stdout_lines | default(['이미 존재하여 스킵됨']) }}"
+
+    # -------------------------------------------
+    # 정리
+    # -------------------------------------------
+    - name: "호스트 임시 파일 정리"
+      file:
+        path: "{{ amphora_image_file }}"
+        state: absent
+
+    - name: "컨테이너 임시 파일 정리"
+      shell: "docker exec -u root glance_api rm -f /tmp/amphora.qcow2"
+      changed_when: false
+
+    # -------------------------------------------
+    # 최종 확인
+    # -------------------------------------------
+    - name: "amphora 이미지 등록 확인"
+      shell: |
+        docker exec glance_api openstack           --os-auth-url {{ os_auth_url }}           --os-project-name service           --os-username octavia           --os-password '{{ octavia_pw.stdout }}'           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           image list --tag {{ amphora_image_tag }} -c ID -c Name -c Status
+      register: final_check
+      changed_when: false
+
+    - name: "최종 결과"
+      debug:
+        msg: "{{ final_check.stdout_lines }}"
+
+# ===========================================
+# Trove 게스트 이미지 등록 + 데이터스토어 설정
+# ===========================================
+- name: "Post-deploy: Trove 게스트 이미지 및 데이터스토어 등록"
+  hosts: stack1
+  become: yes
+
+  vars:
+    trove_image_url: "https://tarballs.opendev.org/openstack/trove/images/trove-master-guest-ubuntu-noble.qcow2"
+    trove_image_file: "/tmp/trove-guest-ubuntu-noble.qcow2"
+    trove_image_name: "trove-guest-ubuntu-noble"
+    trove_datastores:
+      - { name: "mysql", version: "8.0" }
+      - { name: "mariadb", version: "10.6" }
+      - { name: "postgresql", version: "16" }
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    admin_openrc: "/etc/kolla/admin-openrc.sh"
+
+  tasks:
+    # ── 사전 확인 ──
+    - name: "admin-openrc.sh 존재 확인"
+      stat:
+        path: "{{ admin_openrc }}"
+      register: openrc_check
+
+    - name: "admin-openrc.sh 없으면 실패"
+      fail:
+        msg: "{{ admin_openrc }} 없음. kolla-ansible post-deploy 먼저 실행하세요."
+      when: not openrc_check.stat.exists
+
+    - name: "admin 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ admin_openrc }} | sed \"s/.*='\\(.*\\)'/\\1/\""
+      register: admin_pw
+      changed_when: false
+
+    # ── Glance 이미지 업로드 ──
+    - name: "기존 Trove 게스트 이미지 확인"
+      shell: |
+        docker exec nova_api openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          image list --tag trove -f value -c Name
+      register: existing_trove_image
+      changed_when: false
+
+    - name: "Trove 이미지 이미 존재 — 스킵"
+      debug:
+        msg: "Trove 게스트 이미지 이미 등록됨: {{ existing_trove_image.stdout }}"
+      when: existing_trove_image.stdout | length > 0
+
+    - name: "Trove 게스트 이미지 다운로드 (~1.3GB)"
+      shell: "wget -q -O {{ trove_image_file }} '{{ trove_image_url }}'"
+      when: existing_trove_image.stdout | length == 0
+
+    - name: "이미지를 nova_api 컨테이너로 복사"
+      shell: "docker cp {{ trove_image_file }} nova_api:/tmp/trove-guest.qcow2"
+      when: existing_trove_image.stdout | length == 0
+
+    - name: "Glance에 Trove 게스트 이미지 업로드"
+      shell: |
+        docker exec nova_api openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          image create {{ trove_image_name }} \
+            --container-format bare \
+            --disk-format qcow2 \
+            --public \
+            --tag trove \
+            --tag mysql \
+            --tag mariadb \
+            --tag postgresql \
+            --property hw_rng_model=virtio \
+            --file /tmp/trove-guest.qcow2
+      when: existing_trove_image.stdout | length == 0
+      register: trove_upload_result
+
+    - name: "업로드 결과"
+      debug:
+        msg: "{{ trove_upload_result.stdout_lines | default(['이미 존재하여 스킵됨']) }}"
+
+    - name: "호스트 임시 파일 정리"
+      file:
+        path: "{{ trove_image_file }}"
+        state: absent
+
+    - name: "컨테이너 임시 파일 정리"
+      shell: "docker exec -u root nova_api rm -f /tmp/trove-guest.qcow2"
+      changed_when: false
+
+    # ── 데이터스토어 등록 ──
+    - name: "Trove 게스트 이미지 ID 조회"
+      shell: |
+        docker exec nova_api openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          image show {{ trove_image_name }} -f value -c id
+      register: trove_image_id
+      changed_when: false
+
+    - name: "데이터스토어 등록"
+      shell: |
+        docker exec trove_taskmanager trove-manage datastore_update {{ item.name }} ''
+        docker exec trove_taskmanager trove-manage datastore_version_update \
+          {{ item.name }} {{ item.version }} {{ item.name }} {{ trove_image_id.stdout }} '' 1
+        docker exec trove_taskmanager trove-manage datastore_update {{ item.name }} {{ item.version }}
+      loop: "{{ trove_datastores }}"
+      register: ds_result
+
+    - name: "데이터스토어 등록 결과"
+      debug:
+        msg: "{{ item.item.name }} {{ item.item.version }} 등록 완료"
+      loop: "{{ ds_result.results }}"
+
+    # ── Validation rules 로드 ──
+    - name: "Validation rules 파일 확인"
+      shell: |
+        docker exec trove_taskmanager bash -c \
+          'ls /var/lib/kolla/venv/lib/python3*/dist-packages/trove/templates/{{ item.name }}/validation-rules.json 2>/dev/null'
+      loop: "{{ trove_datastores }}"
+      register: rules_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Validation rules 로드"
+      shell: |
+        docker exec trove_taskmanager trove-manage \
+          db_load_datastore_config_parameters {{ item.item.name }} {{ item.item.version }} {{ item.stdout }}
+      loop: "{{ rules_check.results }}"
+      when: item.stdout | length > 0
+      failed_when: false
+
+    # ── 최종 확인 ──
+    - name: "Trove 이미지 등록 확인"
+      shell: |
+        docker exec nova_api openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          image list --tag trove -c ID -c Name -c Status
+      register: final_check
+      changed_when: false
+
+    - name: "최종 결과"
+      debug:
+        msg: "{{ final_check.stdout_lines }}"
+
+# ===========================================
+# Trove Management Network (mgmt-net) 생성
+# ===========================================
+- name: "Post-deploy: Trove Management Network 생성"
+  hosts: stack1
+  become: yes
+
+  vars:
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    admin_openrc: "/etc/kolla/admin-openrc.sh"
+
+  tasks:
+    - name: "admin 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ admin_openrc }} | sed \"s/.*='\\(.*\\)'/\\1/\""
+      register: admin_pw
+      changed_when: false
+
+    - name: "mgmt-net 존재 확인"
+      shell: |
+        docker exec nova_api openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          network show mgmt-net -f value -c id 2>/dev/null
+      register: mgmt_net_check
+      changed_when: false
+      failed_when: false
+
+    - name: "mgmt-net 이미 존재"
+      debug:
+        msg: "mgmt-net 이미 존재: {{ mgmt_net_check.stdout }}"
+      when: mgmt_net_check.rc == 0
+
+    - name: "mgmt-net 생성 (provider flat on physnet2)"
+      shell: |
+        docker exec nova_api openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          network create mgmt-net \
+            --provider-physical-network physnet2 \
+            --provider-network-type flat \
+            --share
+      when: mgmt_net_check.rc != 0
+      register: mgmt_net_create
+
+    - name: "mgmt-subnet 생성 (10.0.2.0/24, DHCP, pool 200-250)"
+      shell: |
+        docker exec nova_api openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          subnet create mgmt-subnet \
+            --network mgmt-net \
+            --subnet-range 10.0.2.0/24 \
+            --allocation-pool start=10.0.2.200,end=10.0.2.250 \
+            --gateway none \
+            --dhcp
+      when: mgmt_net_check.rc != 0
+
+    - name: "mgmt-net ID 조회"
+      shell: |
+        docker exec nova_api openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          network show mgmt-net -f value -c id
+      register: mgmt_net_id
+      changed_when: false
+
+    - name: "mgmt-net ID"
+      debug:
+        msg: "mgmt-net UUID: {{ mgmt_net_id.stdout }}"
+
+# ===========================================
+# Trove management_networks 설정
+# ===========================================
+- name: "Post-deploy: Trove management_networks 설정"
+  hosts: stack1
+  become: yes
+
+  vars:
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    admin_openrc: "/etc/kolla/admin-openrc.sh"
+
+  tasks:
+    - name: "admin 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ admin_openrc }} | sed \"s/.*='\\(.*\\)'/\\1/\""
+      register: admin_pw
+      changed_when: false
+
+    - name: "mgmt-net ID 조회"
+      shell: |
+        docker exec nova_api openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          network show mgmt-net -f value -c id
+      register: mgmt_net_id
+      changed_when: false
+
+    - name: "Trove config override 업데이트 (management_networks 추가)"
+      blockinfile:
+        path: /etc/kolla/config/trove.conf
+        marker: "# {mark} TROVE MANAGEMENT NETWORK"
+        block: |
+          [DEFAULT]
+          management_networks = {{ mgmt_net_id.stdout }}
+
+    - name: "결과 확인"
+      shell: cat /etc/kolla/config/trove.conf
+      register: trove_conf
+      changed_when: false
+
+    - name: "Trove config 내용"
+      debug:
+        msg: "{{ trove_conf.stdout_lines }}"
+
+    - name: "안내"
+      debug:
+        msg:
+          - "management_networks 설정 완료!"
+          - "다음 명령으로 Trove 서비스에 반영하세요:"
+          - "  source /root/kolla-venv/bin/activate"
+          - "  kolla-ansible reconfigure -i /root/multinode --tags trove"

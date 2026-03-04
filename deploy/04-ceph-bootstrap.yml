@@ -1,0 +1,25 @@
+---
+- name: "Ceph 부트스트랩 (stack1만, Podman)"
+  hosts: stack1
+  become: yes
+
+  tasks:
+    - name: "Ceph 부트스트랩"
+      shell: |
+        cephadm bootstrap \
+          --mon-ip {{ storage_ip }} \
+          --cluster-network {{ storage_network }} \
+          --allow-fqdn-hostname \
+          --skip-firewalld \
+          --skip-monitoring-stack
+      args:
+        creates: /etc/ceph/ceph.conf
+      timeout: 600
+
+    - name: "Ceph 상태 확인"
+      command: ceph -s
+      register: ceph_status
+
+    - name: "상태 출력"
+      debug:
+        msg: "{{ ceph_status.stdout_lines }}"

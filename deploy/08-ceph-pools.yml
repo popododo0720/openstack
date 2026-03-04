@@ -1,0 +1,63 @@
+---
+# OpenStack용 Ceph 풀 생성
+- name: "Ceph 풀 생성"
+  hosts: stack1
+  become: yes
+  vars:
+    ceph_pools:
+      - name: "images"
+        pg_num: 32
+        application: "rbd"
+      - name: "vms"
+        pg_num: 16
+        application: "rbd"
+      - name: "volumes"
+        pg_num: 32
+        application: "rbd"
+      - name: "backups"
+        pg_num: 32
+        application: "rbd"
+      - name: "cephfs_data"
+        pg_num: 32
+        application: "cephfs"
+      - name: "cephfs_metadata"
+        pg_num: 16
+        application: "cephfs"
+    cephfs_name: "cephfs"
+
+  tasks:
+    - name: "풀 생성"
+      command: cephadm shell -- ceph osd pool create {{ item.name }} {{ item.pg_num }} {{ item.pg_num }}
+      loop: "{{ ceph_pools }}"
+      register: pool_create
+      failed_when: false
+
+    - name: "풀 application 설정"
+      command: cephadm shell -- ceph osd pool application enable {{ item.name }} {{ item.application }}
+      loop: "{{ ceph_pools }}"
+      failed_when: false
+
+    - name: "CephFS 생성"
+      command: cephadm shell -- ceph fs new {{ cephfs_name }} cephfs_metadata cephfs_data
+      register: fs_create
+      failed_when: false
+
+    - name: "MDS 배포"
+      command: cephadm shell -- ceph orch apply mds {{ cephfs_name }} --placement=stack1
+      failed_when: false
+
+    - name: "풀 목록 확인"
+      command: cephadm shell -- ceph osd lspools
+      register: pools_output
+
+    - name: "풀 목록 출력"
+      debug:
+        msg: "{{ pools_output.stdout_lines }}"
+
+    - name: "Ceph 상태"
+      command: ceph -s
+      register: ceph_status
+
+    - name: "상태 출력"
+      debug:
+        msg: "{{ ceph_status.stdout_lines }}"

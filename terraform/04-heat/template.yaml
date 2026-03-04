@@ -1,0 +1,56 @@
+heat_template_version: 2021-04-16
+
+description: Heat 테스트 - VM + 네트워크 + 볼륨 한방 배포
+
+parameters:
+  image:
+    type: string
+    default: cirros-0.6.3
+  flavor:
+    type: string
+    default: m1.small
+  network:
+    type: string
+    default: tenant-net
+  key_name:
+    type: string
+    default: test-keypair
+
+resources:
+  server_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_param: network }
+
+  data_volume:
+    type: OS::Cinder::Volume
+    properties:
+      name: heat-data-vol
+      size: 5
+
+  server:
+    type: OS::Nova::Server
+    properties:
+      name: heat-test-vm
+      image: { get_param: image }
+      flavor: { get_param: flavor }
+      key_name: { get_param: key_name }
+      networks:
+        - port: { get_resource: server_port }
+
+  vol_attach:
+    type: OS::Cinder::VolumeAttachment
+    properties:
+      volume_id: { get_resource: data_volume }
+      instance_uuid: { get_resource: server }
+
+outputs:
+  server_ip:
+    description: VM 내부 IP
+    value: { get_attr: [server_port, fixed_ips, 0, ip_address] }
+  server_id:
+    description: VM ID
+    value: { get_resource: server }
+  volume_id:
+    description: 볼륨 ID
+    value: { get_resource: data_volume }

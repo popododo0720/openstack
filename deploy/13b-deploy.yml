@@ -1,0 +1,20 @@
+---
+- name: "Kolla 서비스 배포 (deploy)"
+  hosts: stack1
+  become: yes
+  vars:
+    venv_path: "/root/kolla-venv"
+    multinode_path: "/root/multinode"
+
+  tasks:
+    - name: "kolla-ansible deploy 실행"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        stdbuf -oL kolla-ansible deploy -i {{ multinode_path }} 2>&1 | tee /root/kolla-deploy.log
+      args:
+        executable: /bin/bash
+      register: deploy_result
+
+    - name: "deploy 결과"
+      debug:
+        msg: "{{ deploy_result.stdout_lines[-15:] }}"

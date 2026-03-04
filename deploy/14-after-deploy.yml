@@ -1,0 +1,767 @@
+---
+# 14-after-deploy.yml
+# kolla-ansible deploy/post-deploy 이후 수동 설정
+# 사용법: ansible-playbook -i inventory.ini 14-after-deploy.yml
+
+- name: "Post-deploy: Octavia amphora 이미지 등록"
+  hosts: stack1
+  become: yes
+
+  vars:
+    amphora_image_file: "/tmp/amphora-x64-haproxy.qcow2"
+    amphora_image_name: "amphora-x64-haproxy"
+    amphora_image_tag: "amphora"
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    octavia_openrc: "/etc/kolla/octavia-openrc.sh"
+
+  tasks:
+    # -------------------------------------------
+    # 사전 확인
+    # -------------------------------------------
+    - name: "octavia-openrc.sh 존재 확인"
+      stat:
+        path: "{{ octavia_openrc }}"
+      register: openrc_check
+
+    - name: "octavia-openrc.sh 없으면 실패"
+      fail:
+        msg: "{{ octavia_openrc }} 없음. kolla-ansible post-deploy 먼저 실행하세요."
+      when: not openrc_check.stat.exists
+
+    - name: "octavia 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ octavia_openrc }} | cut -d\"'\" -f2"
+      register: octavia_pw
+      changed_when: false
+
+    - name: "기존 amphora 이미지 확인"
+      shell: |
+        docker exec kolla_toolbox openstack           --os-auth-url {{ os_auth_url }}           --os-project-name service           --os-username octavia           --os-password '{{ octavia_pw.stdout }}'           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           image list --tag {{ amphora_image_tag }} -f value -c ID
+      register: existing_image
+      changed_when: false
+
+    - name: "amphora 이미지 이미 존재 — 스킵"
+      debug:
+        msg: "amphora 이미지 이미 등록됨: {{ existing_image.stdout }}"
+      when: existing_image.stdout | length > 0
+
+    # -------------------------------------------
+    # 이미지 다운로드 및 업로드
+    # -------------------------------------------
+    - name: "amphora 이미지 복사 (216 로컬)"
+      copy:
+        src: /opt/images/amphora-x64-haproxy.qcow2
+        dest: /tmp/amphora-x64-haproxy.qcow2
+      when: existing_image.stdout | length == 0
+
+    - name: "이미지를 kolla_toolbox 컨테이너로 복사"
+      shell: "docker cp {{ amphora_image_file }} kolla_toolbox:/tmp/amphora.qcow2"
+      when: existing_image.stdout | length == 0
+
+    - name: "Glance에 amphora 이미지 업로드"
+      shell: |
+        docker exec kolla_toolbox openstack           --os-auth-url {{ os_auth_url }}           --os-project-name service           --os-username octavia           --os-password '{{ octavia_pw.stdout }}'           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           image create {{ amphora_image_name }}             --container-format bare             --disk-format qcow2             --private             --tag {{ amphora_image_tag }}             --file /tmp/amphora.qcow2             --property hw_architecture=x86_64             --property hw_rng_model=virtio
+      when: existing_image.stdout | length == 0
+      register: upload_result
+
+    - name: "업로드 결과"
+      debug:
+        msg: "{{ upload_result.stdout_lines | default(['이미 존재하여 스킵됨']) }}"
+
+    # -------------------------------------------
+    # 정리
+    # -------------------------------------------
+    - name: "호스트 임시 파일 정리"
+      file:
+        path: "{{ amphora_image_file }}"
+        state: absent
+
+    - name: "컨테이너 임시 파일 정리"
+      shell: "docker exec -u root kolla_toolbox rm -f /tmp/amphora.qcow2"
+      changed_when: false
+
+    # -------------------------------------------
+    # 최종 확인
+    # -------------------------------------------
+    - name: "amphora 이미지 등록 확인"
+      shell: |
+        docker exec kolla_toolbox openstack           --os-auth-url {{ os_auth_url }}           --os-project-name service           --os-username octavia           --os-password '{{ octavia_pw.stdout }}'           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           image list --tag {{ amphora_image_tag }} -c ID -c Name -c Status
+      register: final_check
+      changed_when: false
+
+    - name: "최종 결과"
+      debug:
+        msg: "{{ final_check.stdout_lines }}"
+
+
+# ===========================================
+# Quota 무제한 설정 (사설 환경 — 하드웨어가 한계)
+# ===========================================
+- name: "Post-deploy: Quota 무제한 설정"
+  hosts: stack1
+  become: yes
+
+  vars:
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    admin_openrc: "/etc/kolla/admin-openrc.sh"
+
+  tasks:
+    - name: "admin 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ admin_openrc }} | sed \"s/.*='\\(.*\\)'/\\1/\""
+      register: admin_pw
+      changed_when: false
+
+    - name: "Nova quota 무제한 설정"
+      shell: |
+        docker exec kolla_toolbox openstack           --os-auth-url {{ os_auth_url }}           --os-username admin           --os-password '{{ admin_pw.stdout }}'           --os-project-name admin           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           quota set --instances -1 --cores -1 --ram -1             --key-pairs -1 --server-groups -1 --server-group-members -1             admin
+      changed_when: false
+
+    - name: "Cinder quota 무제한 설정"
+      shell: |
+        docker exec kolla_toolbox openstack           --os-auth-url {{ os_auth_url }}           --os-username admin           --os-password '{{ admin_pw.stdout }}'           --os-project-name admin           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           quota set --volumes -1 --snapshots -1 --gigabytes -1             --backups -1 --backup-gigabytes -1 --per-volume-gigabytes -1             admin
+      changed_when: false
+
+    - name: "Neutron quota 무제한 설정"
+      shell: |
+        docker exec kolla_toolbox openstack           --os-auth-url {{ os_auth_url }}           --os-username admin           --os-password '{{ admin_pw.stdout }}'           --os-project-name admin           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           quota set --floating-ips -1 --secgroup-rules -1 --secgroups -1             --networks -1 --subnets -1 --ports -1 --routers -1             admin
+      changed_when: false
+
+    - name: "Quota 확인"
+      shell: |
+        docker exec kolla_toolbox openstack           --os-auth-url {{ os_auth_url }}           --os-username admin           --os-password '{{ admin_pw.stdout }}'           --os-project-name admin           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           quota show
+      register: quota_check
+      changed_when: false
+
+    - name: "Quota 결과"
+      debug:
+        msg: "{{ quota_check.stdout_lines }}"
+
+# ===========================================
+# Trove 게스트 이미지 등록 + 데이터스토어 설정
+# ===========================================
+- name: "Post-deploy: Trove 게스트 이미지 및 데이터스토어 등록"
+  hosts: stack1
+  become: yes
+
+  vars:
+    trove_image_file: "/tmp/trove-guest-ubuntu-noble.qcow2"
+    trove_image_name: "trove-guest-ubuntu-noble"
+    trove_datastores:
+      - { name: "mysql", version: "8.0" }
+      - { name: "mariadb", version: "10.6" }
+      - { name: "postgresql", version: "16" }
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    admin_openrc: "/etc/kolla/admin-openrc.sh"
+
+  tasks:
+    # ── 사전 확인 ──
+    - name: "admin-openrc.sh 존재 확인"
+      stat:
+        path: "{{ admin_openrc }}"
+      register: openrc_check
+
+    - name: "admin-openrc.sh 없으면 실패"
+      fail:
+        msg: "{{ admin_openrc }} 없음. kolla-ansible post-deploy 먼저 실행하세요."
+      when: not openrc_check.stat.exists
+
+    - name: "admin 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ admin_openrc }} | sed \"s/.*='\\(.*\\)'/\\1/\""
+      register: admin_pw
+      changed_when: false
+
+    # ── Glance 이미지 업로드 ──
+    - name: "기존 Trove 게스트 이미지 확인"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          image list --tag trove -f value -c Name
+      register: existing_trove_image
+      changed_when: false
+
+    - name: "Trove 이미지 이미 존재 — 스킵"
+      debug:
+        msg: "Trove 게스트 이미지 이미 등록됨: {{ existing_trove_image.stdout }}"
+      when: existing_trove_image.stdout | length > 0
+
+    - name: "Trove 게스트 이미지 복사 (216 로컬)"
+      copy:
+        src: /opt/images/trove-guest-ubuntu-noble.qcow2
+        dest: "{{ trove_image_file }}"
+      when: existing_trove_image.stdout | length == 0
+
+    - name: "이미지를 kolla_toolbox 컨테이너로 복사"
+      shell: "docker cp {{ trove_image_file }} kolla_toolbox:/tmp/trove-guest.qcow2"
+      when: existing_trove_image.stdout | length == 0
+
+    - name: "Glance에 Trove 게스트 이미지 업로드"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          image create {{ trove_image_name }} \
+            --container-format bare \
+            --disk-format qcow2 \
+            --public \
+            --tag trove \
+            --tag mysql \
+            --tag mariadb \
+            --tag postgresql \
+            --property hw_rng_model=virtio \
+            --file /tmp/trove-guest.qcow2
+      when: existing_trove_image.stdout | length == 0
+      register: trove_upload_result
+
+    - name: "업로드 결과"
+      debug:
+        msg: "{{ trove_upload_result.stdout_lines | default(['이미 존재하여 스킵됨']) }}"
+
+    - name: "호스트 임시 파일 정리"
+      file:
+        path: "{{ trove_image_file }}"
+        state: absent
+
+    - name: "컨테이너 임시 파일 정리"
+      shell: "docker exec -u root kolla_toolbox rm -f /tmp/trove-guest.qcow2"
+      changed_when: false
+
+    # ── 데이터스토어 등록 ──
+    - name: "Trove 게스트 이미지 ID 조회"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          image show {{ trove_image_name }} -f value -c id
+      register: trove_image_id
+      changed_when: false
+
+    - name: "데이터스토어 등록"
+      shell: |
+        docker exec trove_taskmanager trove-manage datastore_update {{ item.name }} ''
+        docker exec trove_taskmanager trove-manage datastore_version_update \
+          {{ item.name }} {{ item.version }} {{ item.name }} {{ trove_image_id.stdout }} '' 1
+        docker exec trove_taskmanager trove-manage datastore_update {{ item.name }} {{ item.version }}
+      loop: "{{ trove_datastores }}"
+      register: ds_result
+
+    - name: "데이터스토어 등록 결과"
+      debug:
+        msg: "{{ item.item.name }} {{ item.item.version }} 등록 완료"
+      loop: "{{ ds_result.results }}"
+
+    # ── Validation rules 로드 ──
+    - name: "Validation rules 파일 확인"
+      shell: |
+        docker exec trove_taskmanager bash -c \
+          'ls /var/lib/kolla/venv/lib/python3*/dist-packages/trove/templates/{{ item.name }}/validation-rules.json 2>/dev/null'
+      loop: "{{ trove_datastores }}"
+      register: rules_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Validation rules 로드"
+      shell: |
+        docker exec trove_taskmanager trove-manage \
+          db_load_datastore_config_parameters {{ item.item.name }} {{ item.item.version }} {{ item.stdout }}
+      loop: "{{ rules_check.results }}"
+      when: item.stdout | length > 0
+      failed_when: false
+
+    # ── 최종 확인 ──
+    - name: "Trove 이미지 등록 확인"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          image list --tag trove -c ID -c Name -c Status
+      register: final_check
+      changed_when: false
+
+    - name: "최종 결과"
+      debug:
+        msg: "{{ final_check.stdout_lines }}"
+
+# ===========================================
+# Trove Management Network (mgmt-net) 생성
+# ===========================================
+- name: "Post-deploy: Trove Management Network 생성"
+  hosts: stack1
+  become: yes
+
+  vars:
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    admin_openrc: "/etc/kolla/admin-openrc.sh"
+
+  tasks:
+    - name: "admin 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ admin_openrc }} | sed \"s/.*='\\(.*\\)'/\\1/\""
+      register: admin_pw
+      changed_when: false
+
+    - name: "mgmt-net 존재 확인"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          network show mgmt-net -f value -c id 2>/dev/null
+      register: mgmt_net_check
+      changed_when: false
+      failed_when: false
+
+    - name: "mgmt-net 이미 존재"
+      debug:
+        msg: "mgmt-net 이미 존재: {{ mgmt_net_check.stdout }}"
+      when: mgmt_net_check.rc == 0
+
+    - name: "mgmt-net 생성 (provider flat on physnet2)"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          network create mgmt-net \
+            --provider-physical-network physnet2 \
+            --provider-network-type flat \
+            --share
+      when: mgmt_net_check.rc != 0
+      register: mgmt_net_create
+
+    - name: "mgmt-subnet 생성 (10.0.2.0/24, DHCP, pool 200-250)"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          subnet create mgmt-subnet \
+            --network mgmt-net \
+            --subnet-range 10.0.2.0/24 \
+            --allocation-pool start=10.0.2.200,end=10.0.2.250 \
+            --gateway none \
+            --dhcp
+      when: mgmt_net_check.rc != 0
+
+    - name: "mgmt-net ID 조회"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          network show mgmt-net -f value -c id
+      register: mgmt_net_id
+      changed_when: false
+
+    - name: "mgmt-net ID"
+      debug:
+        msg: "mgmt-net UUID: {{ mgmt_net_id.stdout }}"
+
+# ===========================================
+# Trove management_networks 설정
+# ===========================================
+- name: "Post-deploy: Trove management_networks 설정"
+  hosts: stack1
+  become: yes
+
+  vars:
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    admin_openrc: "/etc/kolla/admin-openrc.sh"
+
+  tasks:
+    - name: "admin 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ admin_openrc }} | sed \"s/.*='\\(.*\\)'/\\1/\""
+      register: admin_pw
+      changed_when: false
+
+    - name: "mgmt-net ID 조회"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          network show mgmt-net -f value -c id
+      register: mgmt_net_id
+      changed_when: false
+
+    - name: "Trove config override 업데이트 (management_networks 추가)"
+      lineinfile:
+        path: /etc/kolla/config/trove.conf
+        regexp: '^management_networks'
+        line: "management_networks = {{ mgmt_net_id.stdout }}"
+        insertafter: 'docker_insecure_registries'
+
+    - name: "결과 확인"
+      shell: cat /etc/kolla/config/trove.conf
+      register: trove_conf
+      changed_when: false
+
+    - name: "Trove config 내용"
+      debug:
+        msg: "{{ trove_conf.stdout_lines }}"
+
+    - name: "안내"
+      debug:
+        msg:
+          - "management_networks 설정 완료!"
+          - "다음 명령으로 Trove 서비스에 반영하세요:"
+          - "  source /root/kolla-venv/bin/activate"
+          - "  kolla-ansible reconfigure -i /root/multinode --tags trove"
+
+# ===========================================
+# Designate DNS Zone 생성
+# ===========================================
+- name: "Post-deploy: Designate DNS Zone 생성"
+  hosts: stack1
+  become: yes
+
+  vars:
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    admin_openrc: "/etc/kolla/admin-openrc.sh"
+
+  tasks:
+    - name: "admin 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ admin_openrc }} | sed \"s/.*='\\(.*\\)'/\\1/\""
+      register: admin_pw
+      changed_when: false
+
+    # ── python-designateclient 설치 확인 ──
+    - name: "designate CLI 확인 (kolla_toolbox 컨테이너)"
+      shell: docker exec kolla_toolbox pip show python-designateclient 2>/dev/null
+      register: designate_client_check
+      changed_when: false
+      failed_when: false
+
+    - name: "designate CLI 설치 (없으면)"
+      shell: docker exec kolla_toolbox pip install python-designateclient
+      when: designate_client_check.rc != 0
+    - name: "기존 DNS zone 확인"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          zone list -f value -c name 2>/dev/null
+      register: existing_zones
+      changed_when: false
+      failed_when: false
+
+    - name: "DNS zone 이미 존재 — 스킵"
+      debug:
+        msg: "DNS zone {{ dns_domain }} 이미 존재"
+      when: dns_domain in (existing_zones.stdout | default())
+
+    - name: "DNS zone 생성 ({{ dns_domain }})"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          zone create --email admin@{{ dns_domain | regex_replace('\.+$', '') }} {{ dns_domain }}
+      when: dns_domain not in (existing_zones.stdout | default())
+      register: zone_create_result
+
+    - name: "DNS zone 생성 결과"
+      debug:
+        msg: "{{ zone_create_result.stdout_lines | default(['이미 존재하여 스킵됨']) }}"
+
+    - name: "DNS zone 확인"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          zone list -c id -c name -c status
+      register: zone_list
+      changed_when: false
+
+    - name: "DNS zone 목록"
+      debug:
+        msg: "{{ zone_list.stdout_lines }}"
+
+# ===========================================
+# Masakari Failover Segment 및 Host 등록
+# ===========================================
+- name: "Post-deploy: Masakari Failover Segment 및 Host 등록"
+  hosts: stack1
+  become: yes
+
+  vars:
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    admin_openrc: "/etc/kolla/admin-openrc.sh"
+    masakari_segment_name: "hci-compute-segment"
+    compute_hosts:
+      - stack1
+      - stack2
+      - stack3
+
+  tasks:
+    - name: "admin 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ admin_openrc }} | sed \"s/.*='\\(.*\\)'/\\1/\""
+      register: admin_pw
+      changed_when: false
+
+    # ── python-masakariclient 설치 확인 ──
+    - name: "masakari CLI 확인 (kolla_toolbox 컨테이너)"
+      shell: docker exec kolla_toolbox pip show python-masakariclient 2>/dev/null
+      register: masakari_client_check
+      changed_when: false
+      failed_when: false
+
+    - name: "masakari CLI 설치 (없으면)"
+      shell: docker exec kolla_toolbox pip install python-masakariclient
+      when: masakari_client_check.rc != 0
+
+    # ── Failover Segment 생성 ──
+    - name: "기존 segment 확인"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          segment list -f value -c Name 2>/dev/null
+      register: existing_segments
+      changed_when: false
+      failed_when: false
+
+    - name: "segment 이미 존재 — 스킵"
+      debug:
+        msg: "Segment {{ masakari_segment_name }} 이미 존재"
+      when: masakari_segment_name in (existing_segments.stdout | default())
+
+    - name: "Failover segment 생성"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          segment create \
+            {{ masakari_segment_name }} auto COMPUTE \
+            --description "HCI compute failover segment"
+
+      when: masakari_segment_name not in (existing_segments.stdout | default())
+      register: segment_create_result
+
+    - name: "segment 생성 결과"
+      debug:
+        msg: "{{ segment_create_result.stdout_lines | default(['이미 존재하여 스킵됨']) }}"
+
+    # ── Segment UUID 조회 ──
+    - name: "Segment UUID 조회"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          segment list -f value -c uuid -c name | grep {{ masakari_segment_name }} | awk '{print $1}'
+      register: segment_uuid
+      changed_when: false
+
+    - name: "Segment UUID"
+      debug:
+        msg: "{{ masakari_segment_name }} UUID: {{ segment_uuid.stdout }}"
+
+    # ── Compute Host 등록 ──
+    - name: "기존 host 목록 확인"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          segment host list {{ segment_uuid.stdout }} -f value -c name 2>/dev/null
+      register: existing_hosts
+      changed_when: false
+      failed_when: false
+
+    - name: "Compute host 등록"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          segment host create \
+            {{ item }} COMPUTE "{{ item }}" {{ segment_uuid.stdout }}
+      loop: "{{ compute_hosts }}"
+      when: item not in (existing_hosts.stdout | default())
+      register: host_create_results
+
+    # ── Maintenance 모드 해제 ──
+    - name: "Host maintenance 모드 해제"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          segment host update \
+            --on_maintenance False \
+            {{ item }} {{ segment_uuid.stdout }}
+      loop: "{{ compute_hosts }}"
+      failed_when: false
+
+    # ── 최종 확인 ──
+    - name: "Masakari segment/host 최종 확인"
+      shell: |
+        docker exec kolla_toolbox openstack \
+          --os-auth-url {{ os_auth_url }} \
+          --os-username admin \
+          --os-password '{{ admin_pw.stdout }}' \
+          --os-project-name admin \
+          --os-user-domain-name Default \
+          --os-project-domain-name Default \
+          --os-identity-api-version 3 \
+          --os-cacert {{ os_cacert }} \
+          --os-interface internal \
+          segment host list {{ segment_uuid.stdout }}
+      register: final_host_list
+      changed_when: false
+
+    - name: "Masakari 최종 결과"
+      debug:
+        msg: "{{ final_host_list.stdout_lines }}"
+
+# ===========================================
+# Magnum CA 인증서 권한 수정
+# Kolla config.json이 CA cert를 perm:0600으로 복사하지만
+# magnum(uid 42428)이 get_openstack_ca()로 읽어야 하므로 644 필요
+# ===========================================
+- name: "Post-deploy: Magnum CA 인증서 권한 수정"
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: "magnum_conductor 컨테이너 존재 확인"
+      shell: docker ps -q --filter name=magnum_conductor
+      register: magnum_container
+      changed_when: false
+      failed_when: false
+
+    - name: "CA 인증서 권한 수정 (0600 → 0644)"
+      shell: docker exec -u root magnum_conductor chmod 644 /usr/local/share/ca-certificates/kolla-customca-root.crt
+      when: magnum_container.stdout | length > 0
+
+    - name: "권한 확인"
+      shell: docker exec magnum_conductor ls -la /usr/local/share/ca-certificates/kolla-customca-root.crt
+      when: magnum_container.stdout | length > 0
+      register: perm_check
+      changed_when: false
+
+    - name: "결과"
+      debug:
+        msg: "{{ perm_check.stdout | default('magnum_conductor 없음 — 스킵') }}"
