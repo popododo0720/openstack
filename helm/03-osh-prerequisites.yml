@@ -46,34 +46,7 @@
       until: ingress_wait.rc == 0
       changed_when: false
 
-    # --- MetalLB 설정 (kubespray가 생성한 primary 풀 패치) ---
-    - name: MetalLB IP 풀 패치 (192.168.0.59-192.168.0.60)
-      shell: |
-        kubectl patch ipaddresspool primary -n metallb-system --type=merge -p '
-        {
-          "spec": {
-            "addresses": ["192.168.0.59-192.168.0.60"]
-          }
-        }'
-      changed_when: true
-
-    - name: MetalLB L2Advertisement 설정 (enp6s0 인터페이스 지정)
-      shell: |
-        cat <<'EOF' | kubectl apply -f -
-        apiVersion: metallb.io/v1beta1
-        kind: L2Advertisement
-        metadata:
-          name: primary
-          namespace: metallb-system
-        spec:
-          ipAddressPools:
-            - primary
-          interfaces:
-            - enp6s0
-        EOF
-      changed_when: true
-
-    # --- OpenStack API LoadBalancer ---
+    # --- OpenStack API LoadBalancer (MetalLB는 kubespray에서 이미 설정됨) ---
     - name: OpenStack API LoadBalancer 서비스 생성 (192.168.0.59)
       shell: |
         cat <<'SVCEOF' | kubectl apply -f -
@@ -101,8 +74,6 @@
       changed_when: true
 
     # --- TLS: Self-signed CA + ClusterIssuer (cert-manager 활용) ---
-    # ClusterIssuer는 cert-manager 네임스페이스(기본: cert-manager)의 시크릿만 참조 가능
-    # 따라서 CA Certificate를 cert-manager 네임스페이스에 생성
     - name: cert-manager 네임스페이스에 Self-signed Issuer 생성
       shell: |
         cat <<'EOF' | kubectl apply -f -

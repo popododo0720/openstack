@@ -1,5 +1,5 @@
 ---
-- name: OpenStack-Helm 전체 배포
+- name: K8s 사전 설정
   import_playbook: 01-k8s-prerequisites.yml
 
 - import_playbook: 02-rook-ceph.yml
