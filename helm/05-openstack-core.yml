@@ -5,10 +5,31 @@
   become: true
   vars:
     openstack_release: "2025.1"
-    features: "2025.1 ubuntu_noble ovn tls"
+    features: "admin_creds 2025.1 ubuntu_noble ovn tls"
     overrides_dir: /root/overrides
     overrides_url: https://opendev.org/openstack/openstack-helm/raw/branch/master/values_overrides
     provider_interface: enp4s0
+    admin_username: coremax
+    admin_password: "coremax1@#"
+    core_services:
+      - keystone
+      - heat
+      - glance
+      - cinder
+      - placement
+      - nova
+      - neutron
+    all_releases:
+      - keystone
+      - heat
+      - glance
+      - cinder
+      - placement
+      - openvswitch
+      - ovn
+      - libvirt
+      - nova
+      - neutron
   environment:
     OPENSTACK_RELEASE: "{{ openstack_release }}"
     FEATURES: "{{ features }}"
@@ -16,29 +37,52 @@
     OVERRIDES_URL: "{{ overrides_url }}"
   tasks:
     # ==========================================================
+    # 사전 정리: 이전 실행 실패로 pending 상태인 release 정리
+    # ==========================================================
+    - name: Pending 상태 Helm release 정리 (이전 실행 실패 잔여물)
+      shell: |
+        STATUS=$(helm status {{ item }} -n openstack -o json 2>/dev/null | jq -r '.info.status // "not_installed"')
+        if [[ "$STATUS" == pending-* ]]; then
+          echo "CLEANING: {{ item }} (status: $STATUS)"
+          helm uninstall {{ item }} -n openstack --no-hooks 2>/dev/null || true
+        fi
+      loop: "{{ all_releases }}"
+      register: pending_cleanup
+      changed_when: "'CLEANING' in pending_cleanup.stdout"
+
+    # ==========================================================
     # 오버라이드 다운로드 + 오버라이드 파일 준비
     # ==========================================================
     - name: 핵심 차트 값 오버라이드 다운로드 (tls 포함)
       shell: "helm osh get-values-overrides -d -u {{ overrides_url }} -p {{ overrides_dir }} -c {{ item }} {{ features }}"
-      loop:
-        - keystone
-        - heat
-        - glance
-        - cinder
-        - openvswitch
-        - ovn
-        - libvirt
-        - placement
-        - nova
-        - neutron
+      loop: "{{ all_releases }}"
       changed_when: false
 
-    - name: Keystone 오버라이드 디렉토리 생성
+    # ----------------------------------------------------------
+    # 공통: 모든 Keystone 연동 서비스에 admin 크레덴셜 전달
+    # ----------------------------------------------------------
+    - name: 서비스별 오버라이드 디렉토리 생성
       file:
-        path: "{{ overrides_dir }}/keystone"
+        path: "{{ overrides_dir }}/{{ item }}"
         state: directory
         mode: "0755"
+      loop: "{{ core_services }}"
 
+    - name: 공통 admin 크레덴셜 오버라이드 생성 (모든 Keystone 연동 서비스)
+      copy:
+        dest: "{{ overrides_dir }}/{{ item }}/admin_creds.yaml"
+        content: |
+          endpoints:
+            identity:
+              auth:
+                admin:
+                  username: {{ admin_username }}
+                  password: "{{ admin_password }}"
+      loop: "{{ core_services }}"
+
+    # ----------------------------------------------------------
+    # Keystone 전용 오버라이드
+    # ----------------------------------------------------------
     - name: Keystone 관리자 계정 오버라이드 생성 (coremax)
       copy:
         dest: "{{ overrides_dir }}/keystone/keystone_admin.yaml"
@@ -47,15 +91,280 @@
             identity:
               auth:
                 admin:
-                  username: coremax
-                  password: "coremax1@#"
+                  username: {{ admin_username }}
+                  password: "{{ admin_password }}"
 
-    - name: Glance 오버라이드 디렉토리 생성
-      file:
-        path: "{{ overrides_dir }}/glance"
-        state: directory
-        mode: "0755"
+    # ==========================================================
+    # TLS WSGI 경로 수정 오버라이드 (upstream 버그)
+    # 2025.1-ubuntu_noble 이미지에서 /var/www/cgi-bin/ 디렉토리가 제거됨
+    # 모든 WSGI 스크립트가 /var/lib/openstack/bin/ 으로 이동
+    # 파일명: 2025.1-ubuntu_noble-tls.yaml → tls.yaml 이후 자동 적용
+    # ==========================================================
 
+    # --- Keystone: wsgi.py (keystone-wsgi-public → wsgi.py 이름변경) ---
+    - name: Keystone TLS WSGI 경로 수정 오버라이드 생성
+      copy:
+        dest: "{{ overrides_dir }}/keystone/2025.1-ubuntu_noble-tls.yaml"
+        content: |
+          {% raw %}---
+          conf:
+            wsgi_keystone: |
+              {{- $portInt := tuple "identity" "service" "api" $ | include "helm-toolkit.endpoints.endpoint_port_lookup" }}
+
+              Listen 0.0.0.0:{{ $portInt }}
+
+              LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"" combined
+              LogFormat "%{X-Forwarded-For}i %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"" proxy
+
+              SetEnvIf X-Forwarded-For "^.*\..*\..*\..*" forwarded
+              CustomLog /dev/stdout combined env=!forwarded
+              CustomLog /dev/stdout proxy env=forwarded
+
+              <VirtualHost *:{{ tuple "identity" "service" "api" $ | include "helm-toolkit.endpoints.endpoint_port_lookup" }}>
+                ServerName {{ printf "%s.%s.svc.%s" "keystone-api" .Release.Namespace .Values.endpoints.cluster_domain_suffix }}
+                WSGIDaemonProcess keystone-public processes=1 threads=1 user=keystone group=keystone display-name=%{GROUP}
+                WSGIProcessGroup keystone-public
+                WSGIScriptAlias / /var/www/cgi-bin/keystone/wsgi.py
+                WSGIApplicationGroup %{GLOBAL}
+                WSGIPassAuthorization On
+                ErrorLogFormat "%{cu}t %M"
+                ErrorLog /dev/stdout
+
+                SetEnvIf X-Forwarded-For "^.*\..*\..*\..*" forwarded
+                CustomLog /dev/stdout combined env=!forwarded
+                CustomLog /dev/stdout proxy env=forwarded
+
+                SSLEngine on
+                SSLCertificateFile      /etc/keystone/certs/tls.crt
+                SSLCertificateKeyFile   /etc/keystone/certs/tls.key
+                SSLProtocol             all -SSLv3 -TLSv1 -TLSv1.1
+                SSLCipherSuite          ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256
+                SSLHonorCipherOrder     on
+              </VirtualHost>
+          {% endraw %}
+
+    # --- Heat: port 8004/8000, path /var/lib/openstack/bin/ ---
+    - name: Heat TLS WSGI 경로 수정 오버라이드 생성
+      copy:
+        dest: "{{ overrides_dir }}/heat/2025.1-ubuntu_noble-tls.yaml"
+        content: |
+          {% raw %}---
+          conf:
+            wsgi_heat: |
+              {{- $portInt := tuple "orchestration" "internal" "api" $ | include "helm-toolkit.endpoints.endpoint_port_lookup" }}
+              Listen {{ $portInt }}
+              <Directory /var/lib/openstack/bin>
+                Require all granted
+              </Directory>
+              <VirtualHost *:{{ $portInt }}>
+                ServerName {{ printf "%s.%s.svc.%s" "heat-api" .Release.Namespace .Values.endpoints.cluster_domain_suffix }}
+                WSGIDaemonProcess heat-api processes=1 threads=1 user=heat display-name=%{GROUP}
+                WSGIProcessGroup heat-api
+                WSGIScriptAlias / /var/lib/openstack/bin/heat-wsgi-api
+                WSGIApplicationGroup %{GLOBAL}
+                WSGIPassAuthorization On
+                AllowEncodedSlashes On
+                SetEnvIf X-Forwarded-For "^.*\..*\..*\..*" forwarded
+                ErrorLogFormat "%{cu}t %M"
+                ErrorLog /dev/stdout
+                CustomLog /dev/stdout combined env=!forwarded
+                CustomLog /dev/stdout proxy env=forwarded
+                SSLEngine on
+                SSLCertificateFile      /etc/heat/certs/tls.crt
+                SSLCertificateKeyFile   /etc/heat/certs/tls.key
+                SSLProtocol             all -SSLv3 -TLSv1 -TLSv1.1
+                SSLCipherSuite          ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256
+                SSLHonorCipherOrder     on
+              </VirtualHost>
+            wsgi_cfn: |
+              {{- $portInt := tuple "cloudformation" "internal" "api" $ | include "helm-toolkit.endpoints.endpoint_port_lookup" }}
+              Listen {{ $portInt }}
+              <Directory /var/lib/openstack/bin>
+                Require all granted
+              </Directory>
+              <VirtualHost *:{{ $portInt }}>
+                ServerName {{ printf "%s.%s.svc.%s" "heat-api-cfn" .Release.Namespace .Values.endpoints.cluster_domain_suffix }}
+                WSGIDaemonProcess heat-api-cfn processes=1 threads=1 user=heat display-name=%{GROUP}
+                WSGIProcessGroup heat-api-cfn
+                WSGIScriptAlias / /var/lib/openstack/bin/heat-wsgi-api-cfn
+                WSGIApplicationGroup %{GLOBAL}
+                WSGIPassAuthorization On
+                AllowEncodedSlashes On
+                SetEnvIf X-Forwarded-For "^.*\..*\..*\..*" forwarded
+                ErrorLogFormat "%{cu}t %M"
+                ErrorLog /dev/stdout
+                CustomLog /dev/stdout combined env=!forwarded
+                CustomLog /dev/stdout proxy env=forwarded
+                SSLEngine on
+                SSLCertificateFile      /etc/heat/certs/tls.crt
+                SSLCertificateKeyFile   /etc/heat/certs/tls.key
+                SSLProtocol             all -SSLv3 -TLSv1 -TLSv1.1
+                SSLCipherSuite          ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256
+                SSLHonorCipherOrder     on
+               </VirtualHost>
+          pod:
+            probes:
+              api:
+                heat_api:
+                  liveness:
+                    port: 8004
+              cfn:
+                heat_cfn:
+                  liveness:
+                    port: 8000
+          {% endraw %}
+
+    # --- Placement: port 8778, path /var/lib/openstack/bin/ ---
+    - name: Placement TLS WSGI 경로 수정 오버라이드 생성
+      copy:
+        dest: "{{ overrides_dir }}/placement/2025.1-ubuntu_noble-tls.yaml"
+        content: |
+          ---
+          conf:
+            wsgi_placement: |
+              Listen 8778
+              <Directory /var/lib/openstack/bin>
+                Require all granted
+              </Directory>
+              <VirtualHost *:8778>
+                ServerName placement-api
+                WSGIDaemonProcess placement-api processes=1 threads=1 user=placement group=placement display-name=%{GROUP}
+                WSGIProcessGroup placement-api
+                WSGIScriptAlias / /var/lib/openstack/bin/placement-api
+                WSGIApplicationGroup %{GLOBAL}
+                WSGIPassAuthorization On
+                ErrorLogFormat "%{cu}t %M"
+                SetEnvIf X-Forwarded-For "^.*\..*\..*\..*" forwarded
+                ErrorLog /dev/stdout
+                CustomLog /dev/stdout combined env=!forwarded
+                CustomLog /dev/stdout proxy env=forwarded
+                SSLEngine on
+                SSLCertificateFile      /etc/placement/certs/tls.crt
+                SSLCertificateKeyFile   /etc/placement/certs/tls.key
+                SSLProtocol             all -SSLv3 -TLSv1 -TLSv1.1
+                SSLCipherSuite          ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256
+                SSLHonorCipherOrder     on
+               </VirtualHost>
+          pod:
+            probes:
+              placement:
+                api:
+                  liveness:
+                    port: 8778
+          endpoints:
+            placement:
+              port:
+                api:
+                  internal: 8778
+
+    # --- Cinder: port 8776, path /var/lib/openstack/bin/ ---
+    - name: Cinder TLS WSGI 경로 수정 오버라이드 생성
+      copy:
+        dest: "{{ overrides_dir }}/cinder/2025.1-ubuntu_noble-tls.yaml"
+        content: |
+          ---
+          conf:
+            wsgi_cinder: |
+              Listen 8776
+              <Directory /var/lib/openstack/bin>
+                Require all granted
+              </Directory>
+              <VirtualHost *:8776>
+                ServerName cinder-api
+                WSGIDaemonProcess cinder-api processes=1 threads=1 user=cinder display-name=%{GROUP}
+                WSGIProcessGroup cinder-api
+                WSGIScriptAlias / /var/lib/openstack/bin/cinder-wsgi
+                WSGIApplicationGroup %{GLOBAL}
+                WSGIPassAuthorization On
+                AllowEncodedSlashes On
+                SetEnvIf X-Forwarded-For "^.*\..*\..*\..*" forwarded
+                ErrorLogFormat "%{cu}t %M"
+                ErrorLog /dev/stdout
+                CustomLog /dev/stdout combined env=!forwarded
+                CustomLog /dev/stdout proxy env=forwarded
+                SSLEngine on
+                SSLCertificateFile      /etc/cinder/certs/tls.crt
+                SSLCertificateKeyFile   /etc/cinder/certs/tls.key
+                SSLProtocol             all -SSLv3 -TLSv1 -TLSv1.1
+                SSLCipherSuite          ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256
+                SSLHonorCipherOrder     on
+              </VirtualHost>
+          endpoints:
+            volume:
+              port:
+                api:
+                  internal: 8776
+
+    # --- Nova: ports 8774/8775, path /var/lib/openstack/bin/ ---
+    - name: Nova TLS WSGI 경로 수정 오버라이드 생성
+      copy:
+        dest: "{{ overrides_dir }}/nova/2025.1-ubuntu_noble-tls.yaml"
+        content: |
+          ---
+          conf:
+            wsgi_nova_api: |
+              Listen 8774
+              <Directory /var/lib/openstack/bin>
+                Require all granted
+              </Directory>
+              <VirtualHost *:8774>
+                ServerName nova-api
+                WSGIDaemonProcess nova-api processes=1 threads=1 user=nova display-name=%{GROUP}
+                WSGIProcessGroup nova-api
+                WSGIScriptAlias / /var/lib/openstack/bin/nova-api-wsgi
+                WSGIApplicationGroup %{GLOBAL}
+                WSGIPassAuthorization On
+                AllowEncodedSlashes On
+                SetEnvIf X-Forwarded-For "^.*\..*\..*\..*" forwarded
+                ErrorLogFormat "%{cu}t %M"
+                ErrorLog /dev/stdout
+                CustomLog /dev/stdout combined env=!forwarded
+                CustomLog /dev/stdout proxy env=forwarded
+                SSLEngine on
+                SSLCertificateFile      /etc/nova/certs/tls.crt
+                SSLCertificateKeyFile   /etc/nova/certs/tls.key
+                SSLProtocol             all -SSLv3 -TLSv1 -TLSv1.1
+                SSLCipherSuite          ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256
+                SSLHonorCipherOrder     on
+              </VirtualHost>
+            wsgi_nova_metadata: |
+              Listen 8775
+              <Directory /var/lib/openstack/bin>
+                Require all granted
+              </Directory>
+              <VirtualHost *:8775>
+                ServerName nova-metadata
+                WSGIDaemonProcess nova-metadata processes=1 threads=1 user=nova display-name=%{GROUP}
+                WSGIProcessGroup nova-metadata
+                WSGIScriptAlias / /var/lib/openstack/bin/nova-metadata-wsgi
+                WSGIApplicationGroup %{GLOBAL}
+                WSGIPassAuthorization On
+                AllowEncodedSlashes On
+                SetEnvIf X-Forwarded-For "^.*\..*\..*\..*" forwarded
+                ErrorLogFormat "%{cu}t %M"
+                ErrorLog /dev/stdout
+                CustomLog /dev/stdout combined env=!forwarded
+                CustomLog /dev/stdout proxy env=forwarded
+                SSLEngine on
+                SSLCertificateFile      /etc/nova/certs/tls.crt
+                SSLCertificateKeyFile   /etc/nova/certs/tls.key
+                SSLProtocol             all -SSLv3 -TLSv1 -TLSv1.1
+                SSLCipherSuite          ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256
+                SSLHonorCipherOrder     on
+              </VirtualHost>
+          endpoints:
+            compute:
+              port:
+                api:
+                  internal: 8774
+            compute_metadata:
+              port:
+                metadata:
+                  internal: 8775
+
+    # ----------------------------------------------------------
+    # Glance, Nova, Neutron 전용 오버라이드
+    # ----------------------------------------------------------
     - name: Glance PVC 스토리지 오버라이드 생성
       copy:
         dest: "{{ overrides_dir }}/glance/glance_pvc_storage.yaml"
@@ -64,12 +373,6 @@
           volume:
             class_name: general
             size: 10Gi
-
-    - name: Nova 오버라이드 디렉토리 생성
-      file:
-        path: "{{ overrides_dir }}/nova"
-        state: directory
-        mode: "0755"
 
     - name: Nova overcommit 해제 오버라이드 생성
       copy:
@@ -81,12 +384,6 @@
                 cpu_allocation_ratio: "1.0"
                 ram_allocation_ratio: "1.0"
                 disk_allocation_ratio: "1.0"
-
-    - name: Neutron 오버라이드 디렉토리 생성
-      file:
-        path: "{{ overrides_dir }}/neutron"
-        state: directory
-        mode: "0755"
 
     - name: Neutron provider 오버라이드 생성 (OVN용)
       copy:
@@ -125,9 +422,6 @@
 
     # ==========================================================
     # Wave 2: Heat, Glance, Cinder, Placement, OVN, Libvirt (병렬)
-    #   - Heat/Glance/Cinder/Placement: Keystone 필요 (Wave 1 완료)
-    #   - OVN: OVS 필요 (Wave 1 완료)
-    #   - Libvirt: 독립
     # ==========================================================
     - name: "[Wave 2] Heat 배포"
       shell: >

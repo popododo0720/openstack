@@ -1,60 +1,135 @@
 ---
-- name: OpenStack 추가 서비스 배포
+- name: OpenStack 추가 서비스 배포 (Skyline 대시보드)
   hosts: helm1
   gather_facts: false
   become: true
   vars:
     openstack_release: "2025.1"
-    features: "2025.1 ubuntu_noble ovn tls"
+    features: "admin_creds 2025.1 ubuntu_noble ovn tls"
     overrides_dir: /root/overrides
     overrides_url: https://opendev.org/openstack/openstack-helm/raw/branch/master/values_overrides
+    admin_username: coremax
+    admin_password: "coremax1@#"
   environment:
     OPENSTACK_RELEASE: "{{ openstack_release }}"
     FEATURES: "{{ features }}"
     OVERRIDES_DIR: "{{ overrides_dir }}"
     OVERRIDES_URL: "{{ overrides_url }}"
   tasks:
-    - name: 추가 차트 값 오버라이드 다운로드 (tls 포함)
-      shell: "helm osh get-values-overrides -d -u {{ overrides_url }} -p {{ overrides_dir }} -c {{ item }} {{ features }}"
+    - name: 실패/Pending 상태 Helm release 정리
+      shell: |
+        STATUS=$(helm status {{ item }} -n openstack -o json 2>/dev/null | jq -r '.info.status // "not_installed"')
+        if [[ "$STATUS" == pending-* || "$STATUS" == "failed" ]]; then
+          echo "CLEANING: {{ item }} (status: $STATUS)"
+          helm uninstall {{ item }} -n openstack --no-hooks 2>/dev/null || true
+          kubectl delete pods -n openstack -l application={{ item }} --force --grace-period=0 2>/dev/null || true
+          kubectl delete jobs -n openstack -l application={{ item }} --force 2>/dev/null || true
+          sleep 5
+        fi
       loop:
-        - horizon
-        - barbican
         - skyline
+      register: pending_cleanup
+      changed_when: "'CLEANING' in pending_cleanup.stdout"
+
+    - name: Skyline 차트 값 오버라이드 다운로드
+      shell: "helm osh get-values-overrides -d -u {{ overrides_url }} -p {{ overrides_dir }} -c skyline {{ features }}"
       changed_when: false
 
-    # --- Horizon ---
-    - name: Horizon 배포
-      shell: >
-        helm upgrade --install horizon openstack-helm/horizon
-        --namespace=openstack
-        $(helm osh get-values-overrides -p {{ overrides_dir }} -c horizon {{ features }})
+    - name: Skyline 오버라이드 디렉토리 생성
+      file:
+        path: "{{ overrides_dir }}/skyline"
+        state: directory
+        mode: "0755"
+
+    - name: Skyline admin 크레덴셜 오버라이드 생성
+      copy:
+        dest: "{{ overrides_dir }}/skyline/admin_creds.yaml"
+        content: |
+          endpoints:
+            identity:
+              auth:
+                admin:
+                  username: {{ admin_username }}
+                  password: "{{ admin_password }}"
+
+    - name: Skyline TLS 오버라이드 생성
+      copy:
+        dest: "{{ overrides_dir }}/skyline/tls.yaml"
+        content: |
+          # Skyline 차트는 ks-user job에 CA cert 마운트를 지원하지 않음
+          # ks-user job 비활성화 → Keystone 사용자는 아래 task에서 수동 생성
+          manifests:
+            job_ks_user: false
+          dependencies:
+            static:
+              skyline:
+                jobs:
+                  - skyline-db-sync
+                services:
+                  - endpoint: internal
+                    service: oslo_db
+                  - endpoint: internal
+                    service: identity
+          endpoints:
+            identity:
+              scheme:
+                default: https
+              port:
+                api:
+                  default: 443
+              auth:
+                admin:
+                  cacert: /etc/ssl/certs/openstack-helm.crt
+                skyline:
+                  cacert: /etc/ssl/certs/openstack-helm.crt
+          conf:
+            skyline:
+              openstack:
+                cafile: /etc/ssl/certs/openstack-helm.crt
+          pod:
+            mounts:
+              skyline:
+                skyline:
+                  volumeMounts:
+                    - name: os-ca-cert
+                      mountPath: /etc/ssl/certs/openstack-helm.crt
+                      subPath: ca.crt
+                      readOnly: true
+                  volumes:
+                    - name: os-ca-cert
+                      secret:
+                        secretName: mariadb-tls-direct
+
+    - name: Skyline Keystone 사용자 생성
+      shell: |
+        kubectl exec -n openstack deploy/heat-api -c heat-api -- bash -c '
+          export OS_AUTH_URL=https://keystone-api.openstack.svc.cluster.local:5000/v3
+          export OS_USERNAME={{ admin_username }}
+          export OS_PASSWORD="{{ admin_password }}"
+          export OS_PROJECT_NAME=admin
+          export OS_USER_DOMAIN_NAME=default
+          export OS_PROJECT_DOMAIN_NAME=default
+          export OS_IDENTITY_API_VERSION=3
+          export OS_CACERT=/etc/heat/certs/ca.crt
+          export OS_INTERFACE=internal
+
+          echo "=== Creating skyline user ==="
+          openstack user create --or-show --domain default --password password skyline
+
+          echo "=== Assigning admin role ==="
+          openstack role add --user skyline --user-domain default \
+            --project admin --project-domain default admin 2>/dev/null || true
+
+          echo "=== Verifying ==="
+          openstack user show skyline --domain default -f value -c id
+        '
+      register: ks_user_result
       changed_when: true
 
-    - name: Horizon 파드 대기
-      shell: helm osh wait-for-pods openstack
-      retries: 30
-      delay: 10
-      register: result
-      until: result.rc == 0
-      changed_when: false
+    - name: Keystone 사용자 생성 결과 확인
+      debug:
+        msg: "{{ ks_user_result.stdout_lines }}"
 
-    # --- Barbican ---
-    - name: Barbican 배포
-      shell: >
-        helm upgrade --install barbican openstack-helm/barbican
-        --namespace=openstack
-        $(helm osh get-values-overrides -p {{ overrides_dir }} -c barbican {{ features }})
-      changed_when: true
-
-    - name: Barbican 파드 대기
-      shell: helm osh wait-for-pods openstack
-      retries: 30
-      delay: 10
-      register: result
-      until: result.rc == 0
-      changed_when: false
-
-    # --- Skyline (모던 대시보드) ---
     - name: Skyline 배포
       shell: >
         helm upgrade --install skyline openstack-helm/skyline
@@ -70,7 +145,6 @@
       until: result.rc == 0
       changed_when: false
 
-    # --- Skyline LoadBalancer (192.168.0.60 - VIP, HTTPS) ---
     - name: Skyline LoadBalancer 서비스 생성 (192.168.0.60:443)
       shell: |
         cat <<'SVCEOF' | kubectl apply -f -
