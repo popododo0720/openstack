@@ -1,5 +1,5 @@
 ---
-- name: OpenStack 부가 서비스 배포 (Octavia LB + Designate DNS)
+- name: OpenStack 부가 서비스 배포 (Octavia LB + Designate DNS) — TLS bug workarounds
   hosts: helm1
   gather_facts: false
   become: true
@@ -14,8 +14,8 @@
       OS_AUTH_URL=https://keystone-api.openstack.svc.cluster.local:5000/v3
       OS_CACERT=/etc/heat/certs/ca.crt
       OS_INTERFACE=internal
-      OS_USERNAME={{ admin_username }}
-      OS_PASSWORD={{ admin_password }}
+      OS_USERNAME=coremax
+      OS_PASSWORD=coremax1@#
       OS_PROJECT_NAME=admin
       OS_USER_DOMAIN_NAME=default
       OS_PROJECT_DOMAIN_NAME=default
@@ -26,15 +26,19 @@
     OVERRIDES_URL: "{{ overrides_url }}"
   tasks:
     # ==========================================================
-    # Phase 1: 사전 정리
+    # Phase 1: Pending/Failed Helm release 정리
     # ==========================================================
-    - name: "[Phase 1] Pending 상태 Helm release 정리"
+    - name: "[Phase 1] Pending/Failed 상태 Helm release 정리"
       shell: |
         STATUS=$(helm status {{ item }} -n openstack -o json 2>/dev/null | jq -r '.info.status // "not_installed"')
-        if [[ "$STATUS" == pending-* ]]; then
-          echo "CLEANING: {{ item }} (status: $STATUS)"
-          helm uninstall {{ item }} -n openstack --no-hooks 2>/dev/null || true
-        fi
+        case "$STATUS" in
+          pending-*|failed)
+            echo "CLEANING: {{ item }} (status: $STATUS)"
+            helm uninstall {{ item }} -n openstack --no-hooks 2>/dev/null || true
+            kubectl delete jobs -n openstack -l application={{ item }} --force 2>/dev/null || true
+            kubectl delete pods -n openstack -l application={{ item }} --force --grace-period=0 2>/dev/null || true
+            ;;
+        esac
       loop:
         - redis
         - powerdns
@@ -46,6 +50,18 @@
     # ==========================================================
     # Phase 2: 오버라이드 준비
     # ==========================================================
+    - name: "[Phase 2] Octavia overrides 디렉토리"
+      file:
+        path: "{{ overrides_dir }}/octavia"
+        state: directory
+        mode: "0755"
+
+    - name: "[Phase 2] Designate overrides 디렉토리"
+      file:
+        path: "{{ overrides_dir }}/designate"
+        state: directory
+        mode: "0755"
+
     - name: "[Phase 2] 오버라이드 다운로드"
       shell: "helm osh get-values-overrides -d -u {{ overrides_url }} -p {{ overrides_dir }} -c {{ item }} {{ features }}"
       loop:
@@ -53,53 +69,19 @@
         - designate
       changed_when: false
 
-    - name: "[Phase 2] Octavia OVN 오버라이드"
-      copy:
-        dest: "{{ overrides_dir }}/octavia/octavia_ovn.yaml"
-        content: |
-          manifests:
-            daemonset_health_manager: false
-            daemonset_worker: false
-            deployment_housekeeping: false
-            secret_credential_keys: false
-          conf:
-            octavia:
-              api_settings:
-                enabled_provider_drivers: "ovn:OVN provider"
-                default_provider_driver: ovn
-              controller_worker:
-                network_driver: allowed_address_pairs_driver
-                compute_driver: compute_nova_driver
-                amphora_driver: amphora_noop_driver
-              ovn:
-                ovn_nb_connection: "tcp:ovn-ovsdb-nb.openstack.svc.cluster.local:6641"
-                ovn_sb_connection: "tcp:ovn-ovsdb-sb.openstack.svc.cluster.local:6642"
-          endpoints:
-            valkey:
-              hosts:
-                default: redis
-
-    - name: "[Phase 2] Octavia admin 크레덴셜"
-      copy:
-        dest: "{{ overrides_dir }}/octavia/admin_creds.yaml"
-        content: |
-          endpoints:
-            identity:
-              auth:
-                admin:
-                  username: {{ admin_username }}
-                  password: "{{ admin_password }}"
-
-    - name: "[Phase 2] Octavia TLS 오버라이드"
+    # --- Octavia TLS override: certificates: FALSE (chart doesn't pass tlsSecret) ---
+    - name: "[Phase 2] Octavia TLS 오버라이드 (certificates: false)"
       copy:
         dest: "{{ overrides_dir }}/octavia/tls.yaml"
         content: |
           manifests:
-            certificates: true
+            certificates: false
+            job_db_init: false
             job_rabbit_init: false
             job_ks_user: false
             job_ks_service: false
             job_ks_endpoints: false
+            job_bootstrap: false
           conf:
             octavia:
               keystone_authtoken:
@@ -166,6 +148,13 @@
                   default: 443
           dependencies:
             static:
+              db_sync:
+                jobs: []
+                services:
+                  - endpoint: internal
+                    service: oslo_db
+                  - endpoint: internal
+                    service: oslo_db_persistence
               api:
                 jobs:
                   - octavia-db-sync
@@ -199,9 +188,9 @@
                   - endpoint: internal
                     service: network
 
-    - name: "[Phase 2] Designate admin 크레덴셜"
+    - name: "[Phase 2] Octavia admin 크레덴셜"
       copy:
-        dest: "{{ overrides_dir }}/designate/admin_creds.yaml"
+        dest: "{{ overrides_dir }}/octavia/admin_creds.yaml"
         content: |
           endpoints:
             identity:
@@ -210,16 +199,46 @@
                   username: {{ admin_username }}
                   password: "{{ admin_password }}"
 
-    - name: "[Phase 2] Designate TLS 오버라이드"
+    - name: "[Phase 2] Octavia OVN 오버라이드"
+      copy:
+        dest: "{{ overrides_dir }}/octavia/octavia_ovn.yaml"
+        content: |
+          manifests:
+            daemonset_health_manager: false
+            daemonset_worker: false
+            deployment_housekeeping: false
+            secret_credential_keys: false
+          conf:
+            octavia:
+              api_settings:
+                enabled_provider_drivers: "ovn:OVN provider"
+                default_provider_driver: ovn
+              controller_worker:
+                network_driver: allowed_address_pairs_driver
+                compute_driver: compute_nova_driver
+                amphora_driver: amphora_noop_driver
+              ovn:
+                ovn_nb_connection: "tcp:ovn-ovsdb-nb.openstack.svc.cluster.local:6641"
+                ovn_sb_connection: "tcp:ovn-ovsdb-sb.openstack.svc.cluster.local:6642"
+          endpoints:
+            valkey:
+              hosts:
+                default: redis
+
+    # --- Designate TLS override: certificates: FALSE ---
+    - name: "[Phase 2] Designate TLS 오버라이드 (certificates: false)"
       copy:
         dest: "{{ overrides_dir }}/designate/tls.yaml"
         content: |
           manifests:
-            certificates: true
+            certificates: false
+            job_db_init: false
             job_rabbit_init: false
             job_ks_user: false
             job_ks_service: false
             job_ks_endpoints: false
+            job_bootstrap: false
+            cron_job_service_cleaner: false
           conf:
             designate:
               keystone_authtoken:
@@ -278,13 +297,8 @@
                   default: 443
           dependencies:
             static:
-              db_init:
-                services:
-                  - service: oslo_db
-                    endpoint: internal
               db_sync:
-                jobs:
-                  - designate-db-init
+                jobs: []
                 services:
                   - service: oslo_db
                     endpoint: internal
@@ -349,22 +363,35 @@
                   - service: oslo_messaging
                     endpoint: internal
 
+    - name: "[Phase 2] Designate admin 크레덴셜"
+      copy:
+        dest: "{{ overrides_dir }}/designate/admin_creds.yaml"
+        content: |
+          endpoints:
+            identity:
+              auth:
+                admin:
+                  username: {{ admin_username }}
+                  password: "{{ admin_password }}"
+
     # ==========================================================
-    # Phase 3: Redis + PowerDNS (idempotent)
+    # Phase 3: Redis + PowerDNS 배포
     # ==========================================================
     - name: "[Phase 3] Redis 배포"
       shell: >
         helm upgrade --install redis openstack-helm/redis
         --namespace=openstack
         --timeout=300s
-      changed_when: true
+      register: redis_install
+      changed_when: "'STATUS: deployed' in redis_install.stdout"
 
     - name: "[Phase 3] PowerDNS 배포"
       shell: >
         helm upgrade --install powerdns openstack-helm/powerdns
         --namespace=openstack
         --timeout=300s
-      changed_when: true
+      register: powerdns_install
+      changed_when: "'STATUS: deployed' in powerdns_install.stdout"
 
     - name: "[Phase 3] Redis + PowerDNS 파드 대기"
       shell: helm osh wait-for-pods openstack
@@ -375,7 +402,33 @@
       changed_when: false
 
     # ==========================================================
-    # Phase 4: RabbitMQ vhost/user 수동 생성 (차트 rabbit-init 버그 워크어라운드)
+    # Phase 3b: PowerDNS Service patch — add API port 8081
+    # ==========================================================
+    - name: "[Phase 3b] PowerDNS Service 에 API port 8081 추가"
+      shell: |
+        kubectl -n openstack get service powerdns -o json | python3 -c "
+        import json, sys
+        d = json.load(sys.stdin)
+        ports = d['spec'].get('ports', [])
+        port_names = [p.get('name') for p in ports]
+        if 'powerdns-api' not in port_names:
+            ports.append({
+                'name': 'powerdns-api',
+                'port': 8081,
+                'targetPort': 8081,
+                'protocol': 'TCP'
+            })
+            d['spec']['ports'] = ports
+        for key in ['resourceVersion', 'uid', 'creationTimestamp', 'managedFields']:
+            d['metadata'].pop(key, None)
+        d.pop('status', None)
+        print(json.dumps(d))
+        " | kubectl apply -f -
+      register: pdns_svc_patch
+      changed_when: "'configured' in pdns_svc_patch.stdout"
+
+    # ==========================================================
+    # Phase 4: RabbitMQ vhost/user 수동 생성
     # ==========================================================
     - name: "[Phase 4] Octavia RabbitMQ vhost 생성"
       shell: |
@@ -414,16 +467,53 @@
       changed_when: "'DONE' in rmq_designate_user.stdout"
 
     - name: "[Phase 4] RabbitMQ vhost 확인"
-      shell: kubectl exec -n openstack rabbitmq-rabbitmq-0 -c rabbitmq -- rabbitmqctl list_vhosts --formatter json
+      shell: kubectl exec -n openstack rabbitmq-rabbitmq-0 -c rabbitmq -- rabbitmqctl list_vhosts --no-table-headers
       register: rmq_vhosts
       changed_when: false
 
     - name: "[Phase 4] vhost 목록"
       debug:
-        msg: "{{ (rmq_vhosts.stdout | from_json) | map(attribute='name') | list }}"
+        var: rmq_vhosts.stdout_lines
 
     # ==========================================================
-    # Phase 5: Keystone user/service/endpoint 수동 생성 (차트 ks-user 버그 워크어라운드)
+    # Phase 4b: DB 수동 생성
+    # ==========================================================
+    - name: "[Phase 4b] Octavia DB 수동 생성"
+      shell: |
+        kubectl exec -n openstack mariadb-server-0 -c mariadb -- mariadb \
+          -u root -ppassword \
+          --ssl-cert=/etc/mysql/certs/tls.crt \
+          --ssl-key=/etc/mysql/certs/tls.key \
+          --ssl-ca=/etc/mysql/certs/ca.crt --skip-ssl-verify-server-cert \
+          -e "
+            CREATE DATABASE IF NOT EXISTS octavia;
+            CREATE DATABASE IF NOT EXISTS octavia_persistence;
+            CREATE USER IF NOT EXISTS 'octavia'@'%' IDENTIFIED BY 'password';
+            GRANT ALL PRIVILEGES ON octavia.* TO 'octavia'@'%';
+            GRANT ALL PRIVILEGES ON octavia_persistence.* TO 'octavia'@'%';
+            FLUSH PRIVILEGES;
+          "
+      register: octavia_db
+      changed_when: true
+
+    - name: "[Phase 4b] Designate DB 수동 생성"
+      shell: |
+        kubectl exec -n openstack mariadb-server-0 -c mariadb -- mariadb \
+          -u root -ppassword \
+          --ssl-cert=/etc/mysql/certs/tls.crt \
+          --ssl-key=/etc/mysql/certs/tls.key \
+          --ssl-ca=/etc/mysql/certs/ca.crt --skip-ssl-verify-server-cert \
+          -e "
+            CREATE DATABASE IF NOT EXISTS designate;
+            CREATE USER IF NOT EXISTS 'designate'@'%' IDENTIFIED BY 'password';
+            GRANT ALL PRIVILEGES ON designate.* TO 'designate'@'%';
+            FLUSH PRIVILEGES;
+          "
+      register: designate_db
+      changed_when: true
+
+    # ==========================================================
+    # Phase 5: Keystone user/service/endpoint 수동 생성
     # ==========================================================
     - name: "[Phase 5] Octavia Keystone 리소스 생성"
       shell: |
@@ -482,7 +572,7 @@
         var: designate_ks.stdout_lines
 
     # ==========================================================
-    # Phase 6: Octavia 배포
+    # Phase 6: Octavia helm install
     # ==========================================================
     - name: "[Phase 6] Octavia 배포"
       shell: >
@@ -490,27 +580,252 @@
         --namespace=openstack
         --timeout=600s
         $(helm osh get-values-overrides -p {{ overrides_dir }} -c octavia octavia_ovn {{ features }})
+      register: octavia_install
       changed_when: true
 
-    - name: "[Phase 6] Octavia 파드 대기"
-      shell: helm osh wait-for-pods openstack
-      retries: 60
-      delay: 15
-      register: result
-      until: result.rc == 0
+    - name: "[Phase 6] Octavia db-sync 완료 대기"
+      shell: |
+        kubectl wait --for=condition=complete job/octavia-db-sync -n openstack --timeout=300s 2>/dev/null || true
+        kubectl get pods -n openstack -l application=octavia -l component=api --no-headers | grep -q '.'
+      retries: 30
+      delay: 10
+      register: octavia_ready
+      until: octavia_ready.rc == 0
       changed_when: false
-
-    - name: "[Phase 6] Octavia 파드 상태"
-      shell: kubectl get pods -n openstack -l application=octavia --no-headers
-      register: octavia_pods
-      changed_when: false
-
-    - name: "[Phase 6] Octavia 파드 출력"
-      debug:
-        var: octavia_pods.stdout_lines
 
     # ==========================================================
-    # Phase 7: Designate 배포
+    # Phase 6b: Octavia Certificate CR (manual, since certificates: false)
+    # ==========================================================
+    - name: "[Phase 6b] Octavia Certificate CR 생성"
+      shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: cert-manager.io/v1
+        kind: Certificate
+        metadata:
+          name: octavia-tls-api
+          namespace: openstack
+        spec:
+          secretName: octavia-tls-api
+          issuerRef:
+            name: ca-issuer
+            kind: ClusterIssuer
+          dnsNames:
+            - octavia-api.openstack.svc.cluster.local
+            - octavia.openstack.svc.cluster.local
+          duration: 8760h
+          renewBefore: 720h
+        EOF
+      register: octavia_cert
+      changed_when: "'created' in octavia_cert.stdout or 'configured' in octavia_cert.stdout"
+
+    - name: "[Phase 6b] Octavia TLS secret 대기"
+      shell: kubectl -n openstack get secret octavia-tls-api -o name
+      retries: 30
+      delay: 5
+      register: octavia_tls_secret
+      until: octavia_tls_secret.rc == 0
+      changed_when: false
+
+    # ==========================================================
+    # Phase 6c: Octavia-etc secret patch (uwsgi https-socket + pythonpath)
+    # ==========================================================
+    - name: "[Phase 6c] Octavia-etc secret 패치 (uwsgi https-socket + pythonpath)"
+      shell: |
+        kubectl -n openstack get secret octavia-etc -o json | python3 -c "
+        import json, sys, base64
+        d = json.load(sys.stdin)
+        ini = base64.b64decode(d['data']['octavia-api-uwsgi.ini']).decode()
+        ini = ini.replace('http-socket = 0.0.0.0:9876', 'https-socket = 0.0.0.0:9876,/etc/octavia/certs/tls.crt,/etc/octavia/certs/tls.key')
+        if 'pythonpath' not in ini:
+            ini = ini.rstrip() + '\npythonpath = /opt/ovn-provider\n'
+        d['data']['octavia-api-uwsgi.ini'] = base64.b64encode(ini.encode()).decode()
+        for key in ['resourceVersion', 'managedFields', 'uid', 'creationTimestamp']:
+            d['metadata'].pop(key, None)
+        print(json.dumps(d))
+        " | kubectl apply -f -
+      register: octavia_etc_patch
+      changed_when: "'configured' in octavia_etc_patch.stdout"
+
+    # ==========================================================
+    # Phase 6d: Octavia-api deployment patch
+    #   - rabbitmq-tls-direct volume + mounts (containers + init containers)
+    #   - octavia-tls-cert volume + mount
+    #   - ovn-provider emptyDir + init container + main mount + PYTHONPATH env
+    #   - Remove liveness probe
+    #   - Readiness probe: HTTPS /healthcheck :9876, initialDelaySeconds=150
+    # ==========================================================
+    - name: "[Phase 6d] Octavia-api deployment 종합 패치"
+      shell: |
+        kubectl -n openstack get deployment octavia-api -o json | python3 -c "
+        import json, sys
+
+        d = json.load(sys.stdin)
+        spec = d['spec']['template']['spec']
+
+        # --- Volumes ---
+        vols = spec.setdefault('volumes', [])
+        vol_names = [v['name'] for v in vols]
+
+        if 'rabbitmq-tls-direct' not in vol_names:
+            vols.append({'name': 'rabbitmq-tls-direct', 'secret': {'secretName': 'rabbitmq-tls-direct', 'defaultMode': 292}})
+        if 'octavia-tls-cert' not in vol_names:
+            vols.append({'name': 'octavia-tls-cert', 'secret': {'secretName': 'octavia-tls-api', 'defaultMode': 292}})
+        if 'ovn-provider' not in vol_names:
+            vols.append({'name': 'ovn-provider', 'emptyDir': {}})
+
+        # --- RabbitMQ TLS mounts helper ---
+        rmq_mounts = [
+            {'name': 'rabbitmq-tls-direct', 'mountPath': '/etc/rabbitmq/certs/tls.crt', 'subPath': 'tls.crt', 'readOnly': True},
+            {'name': 'rabbitmq-tls-direct', 'mountPath': '/etc/rabbitmq/certs/tls.key', 'subPath': 'tls.key', 'readOnly': True},
+            {'name': 'rabbitmq-tls-direct', 'mountPath': '/etc/rabbitmq/certs/ca.crt', 'subPath': 'ca.crt', 'readOnly': True},
+        ]
+
+        def ensure_mounts(container, mounts):
+            existing = container.setdefault('volumeMounts', [])
+            existing_paths = set((m['mountPath'], m.get('name')) for m in existing)
+            for m in mounts:
+                if (m['mountPath'], m['name']) not in existing_paths:
+                    existing.append(m)
+
+        # --- Patch all containers ---
+        for c in spec.get('containers', []):
+            ensure_mounts(c, rmq_mounts)
+            # TLS cert mount for main api container
+            ensure_mounts(c, [{'name': 'octavia-tls-cert', 'mountPath': '/etc/octavia/certs', 'readOnly': True}])
+            # OVN provider mount
+            ensure_mounts(c, [{'name': 'ovn-provider', 'mountPath': '/opt/ovn-provider'}])
+            # PYTHONPATH env
+            env = c.setdefault('env', [])
+            env_names = [e['name'] for e in env]
+            if 'PYTHONPATH' not in env_names:
+                env.append({'name': 'PYTHONPATH', 'value': '/opt/ovn-provider'})
+            # Remove liveness probe (OVN driver init takes ~145s, causes CrashLoopBackOff)
+            c.pop('livenessProbe', None)
+            # Set readiness probe
+            c['readinessProbe'] = {
+                'httpGet': {'path': '/healthcheck', 'port': 9876, 'scheme': 'HTTPS'},
+                'initialDelaySeconds': 150,
+                'timeoutSeconds': 5,
+                'failureThreshold': 6,
+                'periodSeconds': 15,
+            }
+
+        # --- Patch init containers ---
+        inits = spec.setdefault('initContainers', [])
+        for c in inits:
+            ensure_mounts(c, rmq_mounts)
+
+        # --- Add OVN provider init container ---
+        init_names = [c['name'] for c in inits]
+        if 'install-ovn-provider' not in init_names:
+            inits.append({
+                'name': 'install-ovn-provider',
+                'image': 'quay.io/airshipit/octavia:2025.1-ubuntu_noble',
+                'command': ['sh', '-c', '/var/lib/openstack/bin/pip install --target=/opt/ovn-provider --no-cache-dir ovn-octavia-provider==8.0.0 && rm -rf /opt/ovn-provider/octavia /opt/ovn-provider/octavia_lib-*.dist-info'],
+                'volumeMounts': [
+                    {'name': 'ovn-provider', 'mountPath': '/opt/ovn-provider'},
+                ] + rmq_mounts,
+            })
+
+        # --- Clean metadata ---
+        for key in ['resourceVersion', 'managedFields', 'uid', 'creationTimestamp', 'annotations']:
+            d['metadata'].pop(key, None)
+
+        print(json.dumps(d))
+        " | kubectl apply -f -
+      register: octavia_api_patch
+      changed_when: "'configured' in octavia_api_patch.stdout"
+
+    # ==========================================================
+    # Phase 6e: Octavia-driver-agent deployment patch
+    #   - rabbitmq-tls-direct volume + mounts
+    #   - ovn-provider init container + volume
+    # ==========================================================
+    - name: "[Phase 6e] Octavia-driver-agent deployment 패치"
+      shell: |
+        kubectl -n openstack get deployment octavia-driver-agent -o json | python3 -c "
+        import json, sys
+
+        d = json.load(sys.stdin)
+        spec = d['spec']['template']['spec']
+
+        # --- Volumes ---
+        vols = spec.setdefault('volumes', [])
+        vol_names = [v['name'] for v in vols]
+
+        if 'rabbitmq-tls-direct' not in vol_names:
+            vols.append({'name': 'rabbitmq-tls-direct', 'secret': {'secretName': 'rabbitmq-tls-direct', 'defaultMode': 292}})
+        if 'ovn-provider' not in vol_names:
+            vols.append({'name': 'ovn-provider', 'emptyDir': {}})
+
+        rmq_mounts = [
+            {'name': 'rabbitmq-tls-direct', 'mountPath': '/etc/rabbitmq/certs/tls.crt', 'subPath': 'tls.crt', 'readOnly': True},
+            {'name': 'rabbitmq-tls-direct', 'mountPath': '/etc/rabbitmq/certs/tls.key', 'subPath': 'tls.key', 'readOnly': True},
+            {'name': 'rabbitmq-tls-direct', 'mountPath': '/etc/rabbitmq/certs/ca.crt', 'subPath': 'ca.crt', 'readOnly': True},
+        ]
+
+        def ensure_mounts(container, mounts):
+            existing = container.setdefault('volumeMounts', [])
+            existing_paths = set((m['mountPath'], m.get('name')) for m in existing)
+            for m in mounts:
+                if (m['mountPath'], m['name']) not in existing_paths:
+                    existing.append(m)
+
+        for c in spec.get('containers', []):
+            ensure_mounts(c, rmq_mounts)
+            ensure_mounts(c, [{'name': 'ovn-provider', 'mountPath': '/opt/ovn-provider'}])
+            env = c.setdefault('env', [])
+            env_names = [e['name'] for e in env]
+            if 'PYTHONPATH' not in env_names:
+                env.append({'name': 'PYTHONPATH', 'value': '/opt/ovn-provider'})
+
+        inits = spec.setdefault('initContainers', [])
+        for c in inits:
+            ensure_mounts(c, rmq_mounts)
+
+        init_names = [c['name'] for c in inits]
+        if 'install-ovn-provider' not in init_names:
+            inits.append({
+                'name': 'install-ovn-provider',
+                'image': 'quay.io/airshipit/octavia:2025.1-ubuntu_noble',
+                'command': ['sh', '-c', '/var/lib/openstack/bin/pip install --target=/opt/ovn-provider --no-cache-dir ovn-octavia-provider==8.0.0 && rm -rf /opt/ovn-provider/octavia /opt/ovn-provider/octavia_lib-*.dist-info'],
+                'volumeMounts': [
+                    {'name': 'ovn-provider', 'mountPath': '/opt/ovn-provider'},
+                ] + rmq_mounts,
+            })
+
+        for key in ['resourceVersion', 'managedFields', 'uid', 'creationTimestamp', 'annotations']:
+            d['metadata'].pop(key, None)
+
+        print(json.dumps(d))
+        " | kubectl apply -f -
+      register: octavia_driver_patch
+      changed_when: "'configured' in octavia_driver_patch.stdout"
+
+    # ==========================================================
+    # Phase 6f: Octavia rollout 대기
+    # ==========================================================
+    - name: "[Phase 6f] Octavia rollout 대기"
+      shell: |
+        kubectl rollout status deployment/octavia-api -n openstack --timeout=300s
+        kubectl rollout status deployment/octavia-driver-agent -n openstack --timeout=300s
+      retries: 3
+      delay: 15
+      register: octavia_rollout
+      until: octavia_rollout.rc == 0
+      changed_when: false
+
+    - name: "[Phase 6f] Octavia 파드 상태 (패치 후)"
+      shell: kubectl get pods -n openstack -l application=octavia --no-headers
+      register: octavia_pods_patched
+      changed_when: false
+
+    - name: "[Phase 6f] Octavia 파드 출력"
+      debug:
+        var: octavia_pods_patched.stdout_lines
+
+    # ==========================================================
+    # Phase 7: Designate helm install
     # ==========================================================
     - name: "[Phase 7] Designate 배포"
       shell: >
@@ -518,52 +833,242 @@
         --namespace=openstack
         --timeout=600s
         $(helm osh get-values-overrides -p {{ overrides_dir }} -c designate {{ features }})
+      register: designate_install
       changed_when: true
 
-    - name: "[Phase 7] Designate 파드 대기"
-      shell: helm osh wait-for-pods openstack
-      retries: 60
-      delay: 15
-      register: result
-      until: result.rc == 0
+    - name: "[Phase 7] Designate db-sync 완료 대기"
+      shell: |
+        kubectl wait --for=condition=complete job/designate-db-sync -n openstack --timeout=300s 2>/dev/null || true
+        kubectl get pods -n openstack -l application=designate -l component=api --no-headers | grep -q '.'
+      retries: 30
+      delay: 10
+      register: designate_ready
+      until: designate_ready.rc == 0
       changed_when: false
 
-    - name: "[Phase 7] Designate 파드 상태"
+    # ==========================================================
+    # Phase 7b: Designate Certificate CR
+    # ==========================================================
+    - name: "[Phase 7b] Designate Certificate CR 생성"
+      shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: cert-manager.io/v1
+        kind: Certificate
+        metadata:
+          name: designate-tls-api
+          namespace: openstack
+        spec:
+          secretName: designate-tls-api
+          issuerRef:
+            name: ca-issuer
+            kind: ClusterIssuer
+          dnsNames:
+            - designate-api.openstack.svc.cluster.local
+            - designate.openstack.svc.cluster.local
+          duration: 8760h
+          renewBefore: 720h
+        EOF
+      register: designate_cert
+      changed_when: "'created' in designate_cert.stdout or 'configured' in designate_cert.stdout"
+
+    - name: "[Phase 7b] Designate TLS secret 대기"
+      shell: kubectl -n openstack get secret designate-tls-api -o name
+      retries: 30
+      delay: 5
+      register: designate_tls_secret
+      until: designate_tls_secret.rc == 0
+      changed_when: false
+
+    # ==========================================================
+    # Phase 7c: Designate-etc secret patch (uwsgi https-socket)
+    # ==========================================================
+    - name: "[Phase 7c] Designate-etc secret 패치 (uwsgi https-socket)"
+      shell: |
+        kubectl -n openstack get secret designate-etc -o json | python3 -c "
+        import json, sys, base64
+        d = json.load(sys.stdin)
+        ini = base64.b64decode(d['data']['designate-api-uwsgi.ini']).decode()
+        ini = ini.replace('http-socket = 0.0.0.0:9001', 'https-socket = 0.0.0.0:9001,/etc/designate/certs/tls.crt,/etc/designate/certs/tls.key')
+        d['data']['designate-api-uwsgi.ini'] = base64.b64encode(ini.encode()).decode()
+        for key in ['resourceVersion', 'managedFields', 'uid', 'creationTimestamp']:
+            d['metadata'].pop(key, None)
+        print(json.dumps(d))
+        " | kubectl apply -f -
+      register: designate_etc_patch
+      changed_when: "'configured' in designate_etc_patch.stdout"
+
+    # ==========================================================
+    # Phase 7d: ALL designate deployments — rabbitmq-tls-direct patch
+    # ==========================================================
+    - name: "[Phase 7d] Designate {{ item }} deployment — rabbitmq-tls-direct 패치"
+      shell: |
+        kubectl -n openstack get deployment designate-{{ item }} -o json | python3 -c "
+        import json, sys
+
+        d = json.load(sys.stdin)
+        spec = d['spec']['template']['spec']
+
+        vols = spec.setdefault('volumes', [])
+        vol_names = [v['name'] for v in vols]
+        if 'rabbitmq-tls-direct' not in vol_names:
+            vols.append({'name': 'rabbitmq-tls-direct', 'secret': {'secretName': 'rabbitmq-tls-direct', 'defaultMode': 292}})
+
+        rmq_mounts = [
+            {'name': 'rabbitmq-tls-direct', 'mountPath': '/etc/rabbitmq/certs/tls.crt', 'subPath': 'tls.crt', 'readOnly': True},
+            {'name': 'rabbitmq-tls-direct', 'mountPath': '/etc/rabbitmq/certs/tls.key', 'subPath': 'tls.key', 'readOnly': True},
+            {'name': 'rabbitmq-tls-direct', 'mountPath': '/etc/rabbitmq/certs/ca.crt', 'subPath': 'ca.crt', 'readOnly': True},
+        ]
+
+        def ensure_mounts(container, mounts):
+            existing = container.setdefault('volumeMounts', [])
+            existing_paths = set((m['mountPath'], m.get('name')) for m in existing)
+            for m in mounts:
+                if (m['mountPath'], m['name']) not in existing_paths:
+                    existing.append(m)
+
+        for c in spec.get('containers', []):
+            ensure_mounts(c, rmq_mounts)
+        for c in spec.get('initContainers', []):
+            ensure_mounts(c, rmq_mounts)
+
+        for key in ['resourceVersion', 'managedFields', 'uid', 'creationTimestamp', 'annotations']:
+            d['metadata'].pop(key, None)
+
+        print(json.dumps(d))
+        " | kubectl apply -f -
+      loop:
+        - api
+        - central
+        - mdns
+        - producer
+        - worker
+      register: designate_rmq_patch
+      changed_when: "'configured' in designate_rmq_patch.stdout"
+
+    # ==========================================================
+    # Phase 7e: Designate-api deployment patch — TLS cert + readiness probe
+    # ==========================================================
+    - name: "[Phase 7e] Designate-api deployment 패치 (TLS cert + readiness probe)"
+      shell: |
+        kubectl -n openstack get deployment designate-api -o json | python3 -c "
+        import json, sys
+
+        d = json.load(sys.stdin)
+        spec = d['spec']['template']['spec']
+
+        # Add designate-tls-cert volume
+        vols = spec.setdefault('volumes', [])
+        vol_names = [v['name'] for v in vols]
+        if 'designate-tls-cert' not in vol_names:
+            vols.append({'name': 'designate-tls-cert', 'secret': {'secretName': 'designate-tls-api', 'defaultMode': 292}})
+
+        def ensure_mounts(container, mounts):
+            existing = container.setdefault('volumeMounts', [])
+            existing_paths = set((m['mountPath'], m.get('name')) for m in existing)
+            for m in mounts:
+                if (m['mountPath'], m['name']) not in existing_paths:
+                    existing.append(m)
+
+        for c in spec.get('containers', []):
+            ensure_mounts(c, [{'name': 'designate-tls-cert', 'mountPath': '/etc/designate/certs', 'readOnly': True}])
+            # Set readiness probe
+            c['readinessProbe'] = {
+                'httpGet': {'path': '/', 'port': 9001, 'scheme': 'HTTPS'},
+                'initialDelaySeconds': 30,
+                'timeoutSeconds': 5,
+                'failureThreshold': 6,
+                'periodSeconds': 15,
+            }
+
+        for key in ['resourceVersion', 'managedFields', 'uid', 'creationTimestamp', 'annotations']:
+            d['metadata'].pop(key, None)
+
+        print(json.dumps(d))
+        " | kubectl apply -f -
+      register: designate_api_patch
+      changed_when: "'configured' in designate_api_patch.stdout"
+
+    # ==========================================================
+    # Phase 7f: Designate-worker init container — --skip-verify-drivers
+    # ==========================================================
+    - name: "[Phase 7f] Designate-worker init container 패치 (--skip-verify-drivers)"
+      shell: |
+        kubectl -n openstack get deployment designate-worker -o json | python3 -c "
+        import json, sys
+
+        d = json.load(sys.stdin)
+        spec = d['spec']['template']['spec']
+
+        for c in spec.get('initContainers', []):
+            if c.get('args'):
+                for i, arg in enumerate(c['args']):
+                    if 'designate-manage pool update' in arg and '--skip-verify-drivers' not in arg:
+                        c['args'][i] = arg.replace(
+                            'designate-manage pool update',
+                            'designate-manage pool update --file /etc/designate/pools.yaml --skip-verify-drivers'
+                        )
+
+        for key in ['resourceVersion', 'managedFields', 'uid', 'creationTimestamp', 'annotations']:
+            d['metadata'].pop(key, None)
+
+        print(json.dumps(d))
+        " | kubectl apply -f -
+      register: designate_worker_patch
+      changed_when: "'configured' in designate_worker_patch.stdout"
+
+    # ==========================================================
+    # Phase 7g: Designate rollout 대기
+    # ==========================================================
+    - name: "[Phase 7g] Designate rollout 대기"
+      shell: "kubectl rollout status deployment/designate-{{ item }} -n openstack --timeout=300s"
+      loop:
+        - api
+        - central
+        - mdns
+        - producer
+        - worker
+      retries: 3
+      delay: 15
+      register: designate_rollout
+      until: designate_rollout.rc == 0
+      changed_when: false
+
+    - name: "[Phase 7g] Designate 파드 상태 (패치 후)"
       shell: kubectl get pods -n openstack -l application=designate --no-headers
-      register: designate_pods
+      register: designate_pods_patched
       changed_when: false
 
-    - name: "[Phase 7] Designate 파드 출력"
+    - name: "[Phase 7g] Designate 파드 출력"
       debug:
-        var: designate_pods.stdout_lines
+        var: designate_pods_patched.stdout_lines
 
     # ==========================================================
-    # Phase 8: Neutron 업그레이드 (Designate DNS 드라이버)
+    # Phase 8: Neutron 업그레이드 (SKIP — commented out)
     # ==========================================================
-    - name: "[Phase 8] Neutron Designate 통합 오버라이드"
-      copy:
-        dest: "{{ overrides_dir }}/neutron/neutron_designate.yaml"
-        content: |
-          conf:
-            neutron:
-              DEFAULT:
-                external_dns_driver: designate
-
-    - name: "[Phase 8] Neutron 업그레이드 (DNS 드라이버 활성화)"
-      shell: >
-        helm upgrade neutron openstack-helm/neutron
-        --namespace=openstack
-        --timeout=600s
-        $(helm osh get-values-overrides -p {{ overrides_dir }} -c neutron neutron_simple neutron_designate {{ features }})
-      changed_when: true
-
-    - name: "[Phase 8] 전체 파드 대기"
-      shell: helm osh wait-for-pods openstack
-      retries: 60
-      delay: 15
-      register: result
-      until: result.rc == 0
-      changed_when: false
+    # - name: "[Phase 8] Neutron Designate 통합 오버라이드"
+    #   copy:
+    #     dest: "{{ overrides_dir }}/neutron/neutron_designate.yaml"
+    #     content: |
+    #       conf:
+    #         neutron:
+    #           DEFAULT:
+    #             external_dns_driver: designate
+    #
+    # - name: "[Phase 8] Neutron 업그레이드 (DNS 드라이버 활성화)"
+    #   shell: >
+    #     helm upgrade neutron openstack-helm/neutron
+    #     --namespace=openstack
+    #     --timeout=600s
+    #     $(helm osh get-values-overrides -p {{ overrides_dir }} -c neutron neutron_simple neutron_designate {{ features }})
+    #   changed_when: true
+    #
+    # - name: "[Phase 8] 전체 파드 대기"
+    #   shell: helm osh wait-for-pods openstack
+    #   retries: 60
+    #   delay: 15
+    #   register: result
+    #   until: result.rc == 0
+    #   changed_when: false
 
     # ==========================================================
     # Phase 9: 검증
@@ -604,3 +1109,20 @@
     - name: "[Phase 9] Helm 릴리스"
       debug:
         var: helm_releases.stdout_lines
+
+    - name: "[Phase 9] 전체 파드 상태 요약"
+      shell: |
+        echo "=== Octavia ==="
+        kubectl get pods -n openstack -l application=octavia --no-headers
+        echo "=== Designate ==="
+        kubectl get pods -n openstack -l application=designate --no-headers
+        echo "=== Redis ==="
+        kubectl get pods -n openstack -l application=redis --no-headers
+        echo "=== PowerDNS ==="
+        kubectl get pods -n openstack -l application=powerdns --no-headers
+      register: pod_summary
+      changed_when: false
+
+    - name: "[Phase 9] 파드 요약 출력"
+      debug:
+        var: pod_summary.stdout_lines

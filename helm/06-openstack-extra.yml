@@ -21,7 +21,7 @@
     # ============================================================
     # Phase 1: 정리
     # ============================================================
-    - name: 실패/Pending 상태 Helm release 정리
+    - name: "[Phase 1] 실패/Pending Helm release 정리"
       shell: |
         STATUS=$(helm status skyline -n openstack -o json 2>/dev/null | jq -r '.info.status // "not_installed"')
         if [[ "$STATUS" == pending-* || "$STATUS" == "failed" ]]; then
@@ -35,17 +35,15 @@
       changed_when: "'CLEANING' in pending_cleanup.stdout"
 
     # ============================================================
-    # Phase 2: MariaDB 준비 (Approach B - 수동 DB/사용자 생성)
-    # Skyline 차트의 db-init job은 MariaDB X509 인증 미지원.
-    # MariaDB pod 내부에서 직접 DB/사용자 생성 후 db-init job 비활성화.
+    # Phase 2: MariaDB 수동 DB/사용자 생성 + X509 복원
     # ============================================================
-    - name: MariaDB에서 Skyline DB 및 사용자 직접 생성
+    - name: "[Phase 2] Skyline DB/사용자 생성"
       shell: |
         kubectl exec -n openstack mariadb-server-0 -c mariadb -- mariadb \
           -u root -p{{ mariadb_root_password }} \
           --ssl-cert=/etc/mysql/certs/tls.crt \
           --ssl-key=/etc/mysql/certs/tls.key \
-          --ssl-ca=/etc/mysql/certs/ca.crt \
+          --ssl-ca=/etc/mysql/certs/ca.crt --skip-ssl-verify-server-cert \
           -e "
             CREATE DATABASE IF NOT EXISTS skyline;
             CREATE USER IF NOT EXISTS 'skyline'@'%' IDENTIFIED BY '{{ skyline_db_password }}';
@@ -56,13 +54,13 @@
       register: db_create_result
       changed_when: "'DB_AND_USER_READY' in db_create_result.stdout"
 
-    - name: MariaDB root 사용자 X509 인증 복원
+    - name: "[Phase 2] MariaDB root X509 복원"
       shell: |
         kubectl exec -n openstack mariadb-server-0 -c mariadb -- mariadb \
           -u root -p{{ mariadb_root_password }} \
           --ssl-cert=/etc/mysql/certs/tls.crt \
           --ssl-key=/etc/mysql/certs/tls.key \
-          --ssl-ca=/etc/mysql/certs/ca.crt \
+          --ssl-ca=/etc/mysql/certs/ca.crt --skip-ssl-verify-server-cert \
           -e "
             ALTER USER 'root'@'%' REQUIRE X509;
             FLUSH PRIVILEGES;
@@ -74,17 +72,17 @@
     # ============================================================
     # Phase 3: Helm overrides 준비
     # ============================================================
-    - name: Skyline 차트 값 오버라이드 다운로드
+    - name: "[Phase 3] 오버라이드 다운로드"
       shell: "helm osh get-values-overrides -d -u {{ overrides_url }} -p {{ overrides_dir }} -c skyline {{ features }}"
       changed_when: false
 
-    - name: Skyline 오버라이드 디렉토리 확인
+    - name: "[Phase 3] 오버라이드 디렉토리"
       file:
         path: "{{ overrides_dir }}/skyline"
         state: directory
         mode: "0755"
 
-    - name: Skyline admin 크레덴셜 오버라이드 생성
+    - name: "[Phase 3] admin 크레덴셜"
       copy:
         dest: "{{ overrides_dir }}/skyline/admin_creds.yaml"
         content: |
@@ -95,19 +93,14 @@
                   username: {{ admin_username }}
                   password: "{{ admin_password }}"
 
-    - name: Skyline TLS 오버라이드 생성
+    - name: "[Phase 3] TLS 오버라이드"
       copy:
         dest: "{{ overrides_dir }}/skyline/tls.yaml"
         content: |
-          # Skyline TLS + Approach B 설정
-          # - certificates: cert-manager가 nginx SSL 인증서 생성
-          # - job_db_init: false → 수동 DB 생성 (MariaDB X509 인증 우회)
-          # - job_ks_user: false → 수동 Keystone 사용자 생성 (CA cert 마운트 미지원)
-          # - ingress: false → MetalLB LoadBalancer 직접 사용
           manifests:
             job_ks_user: false
             job_db_init: false
-            certificates: true
+            certificates: false
             ingress: false
             service_ingress: false
           dependencies:
@@ -139,16 +132,13 @@
                   cacert: /etc/ssl/certs/openstack-helm.crt
           conf:
             skyline:
+              default:
+                database_url: "mysql+pymysql://skyline:{{ skyline_db_password }}@mariadb.openstack.svc.cluster.local:3306/skyline?charset=utf8"
               openstack:
                 cafile: /etc/ssl/certs/openstack-helm.crt
           pod:
             mounts:
               skyline:
-                init_container:
-                  volumeMounts:
-                    - name: skyline-tls-cert
-                      mountPath: /etc/skyline/certs
-                      readOnly: true
                 skyline:
                   volumeMounts:
                     - name: os-ca-cert
@@ -159,16 +149,11 @@
                     - name: os-ca-cert
                       secret:
                         secretName: mariadb-tls-direct
-                    - name: skyline-tls-cert
-                      secret:
-                        secretName: skyline-tls-internal
 
     # ============================================================
     # Phase 4: Keystone 사용자 수동 생성
-    # Skyline 차트의 ks-user job은 OS_CACERT 미지원 → TLS keystone 접근 불가
-    # heat-api pod 내부에서 CA cert 사용하여 직접 생성
     # ============================================================
-    - name: Skyline Keystone 사용자 생성
+    - name: "[Phase 4] Skyline Keystone 사용자"
       shell: |
         kubectl exec -n openstack deploy/heat-api -c heat-api -- bash -c '
           export OS_AUTH_URL=https://keystone-api.openstack.svc.cluster.local:5000/v3
@@ -180,53 +165,73 @@
           export OS_IDENTITY_API_VERSION=3
           export OS_CACERT=/etc/heat/certs/ca.crt
           export OS_INTERFACE=internal
-
-          echo "=== Creating skyline user ==="
           openstack user create --or-show --domain default --password {{ skyline_db_password }} skyline
-
-          echo "=== Assigning admin role ==="
           openstack role add --user skyline --user-domain default \
             --project admin --project-domain default admin 2>/dev/null || true
-
-          echo "=== Verifying ==="
           openstack user show skyline --domain default -f value -c id
         '
       register: ks_user_result
       changed_when: true
 
-    - name: Keystone 사용자 생성 결과 확인
+    - name: "[Phase 4] Keystone 결과"
       debug:
-        msg: "{{ ks_user_result.stdout_lines }}"
+        var: ks_user_result.stdout_lines
 
     # ============================================================
-    # Phase 5: Helm 배포
+    # Phase 5: Helm 배포 + cert-manager Certificate 수동 생성
     # ============================================================
-    - name: Skyline 배포
+    - name: "[Phase 5] Skyline 배포"
       shell: >
         helm upgrade --install skyline openstack-helm/skyline
         --namespace=openstack
         $(helm osh get-values-overrides -p {{ overrides_dir }} -c skyline {{ features }})
       changed_when: true
 
-    - name: cert-manager TLS 인증서 대기
+    - name: "[Phase 5] 파드 대기"
+      shell: helm osh wait-for-pods openstack
+      retries: 30
+      delay: 10
+      register: result
+      until: result.rc == 0
+      changed_when: false
+
+    - name: "[Phase 5] cert-manager Certificate 생성"
+      shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: cert-manager.io/v1
+        kind: Certificate
+        metadata:
+          name: skyline-tls-internal
+          namespace: openstack
+        spec:
+          secretName: skyline-tls-internal
+          issuerRef:
+            name: ca-issuer
+            kind: ClusterIssuer
+          dnsNames:
+            - skyline-api.openstack.svc.cluster.local
+            - skyline.openstack.svc.cluster.local
+          duration: 8760h
+          renewBefore: 720h
+        EOF
+      changed_when: true
+
+    - name: "[Phase 5] TLS 인증서 대기"
       shell: kubectl wait --for=condition=Ready certificate/skyline-tls-internal -n openstack --timeout=120s
       changed_when: false
 
     # ============================================================
-    # Phase 6: nginx SSL 패치
-    # Skyline 차트의 api-init 스크립트가 하드코딩되어 values override 불가.
-    # ConfigMap 패치 후 rollout restart로 SSL 적용.
-    #
-    # api-init 컨테이너:
-    #   /etc/skyline/certs/ → skyline-tls-internal secret (init_container mount)
-    #   /etc/nginx/         → emptyDir (nginx-etc)
-    #   인증서를 emptyDir로 복사 → nginx 컨테이너에서 접근 가능
-    #
-    # nginx 컨테이너:
-    #   /etc/nginx/.skyline/ → 같은 emptyDir (nginx-etc)
-    #   nginx.conf의 SSL 경로는 nginx 컨테이너 관점 (/etc/nginx/.skyline/tls.*)
+    # Phase 6: Deployment 패치 (TLS cert 마운트 + SSL init 스크립트)
     # ============================================================
-    - name: Skyline api-init SSL 스크립트 생성
+    - name: "[Phase 6] Deployment에 TLS volume + volumeMount 패치"
+      shell: |
+        kubectl patch deployment skyline -n openstack --type='json' -p='[
+          {"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "skyline-tls-cert", "secret": {"secretName": "skyline-tls-internal"}}},
+          {"op": "add", "path": "/spec/template/spec/initContainers/1/volumeMounts/-", "value": {"name": "skyline-tls-cert", "mountPath": "/etc/skyline/certs", "readOnly": true}}
+        ]'
+      changed_when: true
+
+    - name: "[Phase 6] api-init SSL 스크립트"
       copy:
         dest: /tmp/skyline-ssl-init.sh
         mode: "0755"
@@ -238,25 +243,24 @@
           GENERATOR_ARGS="--output-file /etc/nginx/nginx.conf --ssl-certfile /etc/nginx/.skyline/tls.crt --ssl-keyfile /etc/nginx/.skyline/tls.key"
           skyline-nginx-generator ${GENERATOR_ARGS}
 
-    - name: Skyline ConfigMap SSL 패치
+    - name: "[Phase 6] ConfigMap SSL 패치"
       shell: |
         kubectl patch configmap skyline-bin -n openstack --type merge \
           -p "{\"data\":{\"skyline-apiserver-init.sh\": $(cat /tmp/skyline-ssl-init.sh | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}}"
-      register: patch_result
-      changed_when: "'patched' in patch_result.stdout"
+      changed_when: true
 
-    - name: Skyline 배포 재시작 (SSL ConfigMap 적용)
+    - name: "[Phase 6] 롤아웃 재시작"
       shell: kubectl rollout restart deployment/skyline -n openstack
       changed_when: true
 
-    - name: Skyline 파드 롤아웃 대기
+    - name: "[Phase 6] 롤아웃 대기"
       shell: kubectl rollout status deployment/skyline -n openstack --timeout=180s
       changed_when: false
 
     # ============================================================
     # Phase 7: LoadBalancer 서비스
     # ============================================================
-    - name: Skyline LoadBalancer 서비스 생성 (192.168.0.60:443)
+    - name: "[Phase 7] Skyline LoadBalancer (192.168.0.60:443)"
       shell: |
         cat <<'SVCEOF' | kubectl apply -f -
         apiVersion: v1
@@ -282,20 +286,16 @@
     # ============================================================
     # Phase 8: 검증
     # ============================================================
-    - name: Skyline HTTPS 연결 확인
+    - name: "[Phase 8] Skyline HTTPS 확인"
       shell: |
-        echo "=== Skyline HTTPS 확인 ==="
         HTTP_CODE=$(curl -sk -o /dev/null -w '%{http_code}' https://192.168.0.60/ 2>/dev/null || echo "000")
         echo "HTTP Status: ${HTTP_CODE}"
-        if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "302" ]]; then
+        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
           echo "SKYLINE_HTTPS_OK"
         else
           echo "SKYLINE_HTTPS_FAILED (code: ${HTTP_CODE})"
-          echo "=== Pod 상태 ==="
           kubectl get pods -n openstack -l application=skyline
-          echo "=== nginx 컨테이너 로그 ==="
           kubectl logs -n openstack deploy/skyline -c nginx --tail=20 2>/dev/null || true
-          echo "=== api-init 로그 ==="
           kubectl logs -n openstack deploy/skyline -c api-init --tail=20 2>/dev/null || true
         fi
       register: verify_result
