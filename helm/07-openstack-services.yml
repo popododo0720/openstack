@@ -10,6 +10,15 @@
     overrides_url: https://opendev.org/openstack/openstack-helm/raw/branch/master/values_overrides
     admin_username: coremax
     admin_password: "coremax1@#"
+    ks_auth_env: >-
+      OS_AUTH_URL=https://keystone-api.openstack.svc.cluster.local:5000/v3
+      OS_CACERT=/etc/heat/certs/ca.crt
+      OS_INTERFACE=internal
+      OS_USERNAME={{ admin_username }}
+      OS_PASSWORD={{ admin_password }}
+      OS_PROJECT_NAME=admin
+      OS_USER_DOMAIN_NAME=default
+      OS_PROJECT_DOMAIN_NAME=default
   environment:
     OPENSTACK_RELEASE: "{{ openstack_release }}"
     FEATURES: "{{ features }}"
@@ -17,9 +26,9 @@
     OVERRIDES_URL: "{{ overrides_url }}"
   tasks:
     # ==========================================================
-    # 사전 정리
+    # Phase 1: 사전 정리
     # ==========================================================
-    - name: Pending 상태 Helm release 정리
+    - name: "[Phase 1] Pending 상태 Helm release 정리"
       shell: |
         STATUS=$(helm status {{ item }} -n openstack -o json 2>/dev/null | jq -r '.info.status // "not_installed"')
         if [[ "$STATUS" == pending-* ]]; then
@@ -34,60 +43,17 @@
       register: pending_cleanup
       changed_when: "'CLEANING' in pending_cleanup.stdout"
 
-    - name: OVN DB 서비스 확인 (Octavia driver-agent 연결용)
-      shell: kubectl get svc -n openstack -o name | grep -i ovn
-      register: ovn_services
-      changed_when: false
-
-    - name: OVN 서비스 목록 출력
-      debug:
-        var: ovn_services.stdout_lines
-
     # ==========================================================
-    # 오버라이드 다운로드 + 준비
+    # Phase 2: 오버라이드 준비
     # ==========================================================
-    - name: 서비스 차트 값 오버라이드 다운로드
+    - name: "[Phase 2] 오버라이드 다운로드"
       shell: "helm osh get-values-overrides -d -u {{ overrides_url }} -p {{ overrides_dir }} -c {{ item }} {{ features }}"
       loop:
         - octavia
         - designate
       changed_when: false
 
-    - name: 서비스별 오버라이드 디렉토리 생성
-      file:
-        path: "{{ overrides_dir }}/{{ item }}"
-        state: directory
-        mode: "0755"
-      loop:
-        - octavia
-        - designate
-
-    - name: Octavia admin 크레덴셜 오버라이드 생성
-      copy:
-        dest: "{{ overrides_dir }}/octavia/admin_creds.yaml"
-        content: |
-          endpoints:
-            identity:
-              auth:
-                admin:
-                  username: {{ admin_username }}
-                  password: "{{ admin_password }}"
-
-    - name: Designate admin 크레덴셜 오버라이드 생성
-      copy:
-        dest: "{{ overrides_dir }}/designate/admin_creds.yaml"
-        content: |
-          endpoints:
-            identity:
-              auth:
-                admin:
-                  username: {{ admin_username }}
-                  password: "{{ admin_password }}"
-
-    # ----------------------------------------------------------
-    # Octavia OVN 모드 오버라이드 (amphora 비활성화)
-    # ----------------------------------------------------------
-    - name: Octavia OVN 모드 오버라이드 생성
+    - name: "[Phase 2] Octavia OVN 오버라이드"
       copy:
         dest: "{{ overrides_dir }}/octavia/octavia_ovn.yaml"
         content: |
@@ -113,22 +79,294 @@
               hosts:
                 default: redis
 
+    - name: "[Phase 2] Octavia admin 크레덴셜"
+      copy:
+        dest: "{{ overrides_dir }}/octavia/admin_creds.yaml"
+        content: |
+          endpoints:
+            identity:
+              auth:
+                admin:
+                  username: {{ admin_username }}
+                  password: "{{ admin_password }}"
+
+    - name: "[Phase 2] Octavia TLS 오버라이드"
+      copy:
+        dest: "{{ overrides_dir }}/octavia/tls.yaml"
+        content: |
+          manifests:
+            certificates: true
+            job_rabbit_init: false
+            job_ks_user: false
+            job_ks_service: false
+            job_ks_endpoints: false
+          conf:
+            octavia:
+              keystone_authtoken:
+                cafile: /etc/octavia/certs/ca.crt
+              service_auth:
+                cafile: /etc/octavia/certs/ca.crt
+              oslo_messaging_rabbit:
+                ssl: true
+                ssl_ca_file: /etc/rabbitmq/certs/ca.crt
+                ssl_cert_file: /etc/rabbitmq/certs/tls.crt
+                ssl_key_file: /etc/rabbitmq/certs/tls.key
+          network:
+            api:
+              ingress:
+                annotations:
+                  nginx.ingress.kubernetes.io/backend-protocol: "https"
+          endpoints:
+            identity:
+              auth:
+                admin:
+                  cacert: /etc/ssl/certs/openstack-helm.crt
+                octavia:
+                  cacert: /etc/ssl/certs/openstack-helm.crt
+                test:
+                  cacert: /etc/ssl/certs/openstack-helm.crt
+              scheme:
+                default: https
+              port:
+                api:
+                  default: 443
+            load_balancer:
+              host_fqdn_override:
+                default:
+                  tls:
+                    secretName: octavia-tls-api
+                    issuerRef:
+                      name: ca-issuer
+                      kind: ClusterIssuer
+              scheme:
+                default: https
+                service: https
+              port:
+                api:
+                  public: 443
+            oslo_db:
+              auth:
+                admin:
+                  secret:
+                    tls:
+                      internal: mariadb-tls-direct
+            oslo_db_persistence:
+              auth:
+                admin:
+                  secret:
+                    tls:
+                      internal: mariadb-tls-direct
+            oslo_messaging:
+              port:
+                https:
+                  default: 15680
+            ingress:
+              port:
+                ingress:
+                  default: 443
+          dependencies:
+            static:
+              api:
+                jobs:
+                  - octavia-db-sync
+                services:
+                  - endpoint: internal
+                    service: oslo_db
+                  - endpoint: internal
+                    service: oslo_db_persistence
+                  - endpoint: internal
+                    service: identity
+                  - endpoint: internal
+                    service: oslo_messaging
+                  - endpoint: internal
+                    service: oslo_cache
+                  - endpoint: internal
+                    service: network
+              driver_agent:
+                jobs:
+                  - octavia-db-sync
+                services:
+                  - endpoint: internal
+                    service: oslo_db
+                  - endpoint: internal
+                    service: oslo_db_persistence
+                  - endpoint: internal
+                    service: identity
+                  - endpoint: internal
+                    service: oslo_messaging
+                  - endpoint: internal
+                    service: oslo_cache
+                  - endpoint: internal
+                    service: network
+
+    - name: "[Phase 2] Designate admin 크레덴셜"
+      copy:
+        dest: "{{ overrides_dir }}/designate/admin_creds.yaml"
+        content: |
+          endpoints:
+            identity:
+              auth:
+                admin:
+                  username: {{ admin_username }}
+                  password: "{{ admin_password }}"
+
+    - name: "[Phase 2] Designate TLS 오버라이드"
+      copy:
+        dest: "{{ overrides_dir }}/designate/tls.yaml"
+        content: |
+          manifests:
+            certificates: true
+            job_rabbit_init: false
+            job_ks_user: false
+            job_ks_service: false
+            job_ks_endpoints: false
+          conf:
+            designate:
+              keystone_authtoken:
+                cafile: /etc/designate/certs/ca.crt
+              oslo_messaging_rabbit:
+                ssl: true
+                ssl_ca_file: /etc/rabbitmq/certs/ca.crt
+                ssl_cert_file: /etc/rabbitmq/certs/tls.crt
+                ssl_key_file: /etc/rabbitmq/certs/tls.key
+          network:
+            api:
+              ingress:
+                annotations:
+                  nginx.ingress.kubernetes.io/backend-protocol: "https"
+          endpoints:
+            identity:
+              auth:
+                admin:
+                  cacert: /etc/ssl/certs/openstack-helm.crt
+                designate:
+                  cacert: /etc/ssl/certs/openstack-helm.crt
+                test:
+                  cacert: /etc/ssl/certs/openstack-helm.crt
+              scheme:
+                default: https
+              port:
+                api:
+                  default: 443
+            dns:
+              host_fqdn_override:
+                default:
+                  tls:
+                    secretName: designate-tls-api
+                    issuerRef:
+                      name: ca-issuer
+                      kind: ClusterIssuer
+              scheme:
+                default: https
+                service: https
+              port:
+                api:
+                  public: 443
+            oslo_db:
+              auth:
+                admin:
+                  secret:
+                    tls:
+                      internal: mariadb-tls-direct
+            oslo_messaging:
+              port:
+                https:
+                  default: 15680
+            ingress:
+              port:
+                ingress:
+                  default: 443
+          dependencies:
+            static:
+              db_init:
+                services:
+                  - service: oslo_db
+                    endpoint: internal
+              db_sync:
+                jobs:
+                  - designate-db-init
+                services:
+                  - service: oslo_db
+                    endpoint: internal
+              api:
+                jobs:
+                  - designate-db-sync
+                services:
+                  - service: oslo_db
+                    endpoint: internal
+                  - service: identity
+                    endpoint: internal
+                  - service: oslo_messaging
+                    endpoint: internal
+              central:
+                jobs:
+                  - designate-db-sync
+                services:
+                  - service: oslo_db
+                    endpoint: internal
+                  - service: identity
+                    endpoint: internal
+                  - service: oslo_messaging
+                    endpoint: internal
+              worker:
+                jobs:
+                  - designate-db-sync
+                services:
+                  - service: oslo_db
+                    endpoint: internal
+                  - service: identity
+                    endpoint: internal
+                  - service: oslo_messaging
+                    endpoint: internal
+              producer:
+                jobs:
+                  - designate-db-sync
+                services:
+                  - service: oslo_db
+                    endpoint: internal
+                  - service: identity
+                    endpoint: internal
+                  - service: oslo_messaging
+                    endpoint: internal
+              mdns:
+                jobs:
+                  - designate-db-sync
+                services:
+                  - service: oslo_db
+                    endpoint: internal
+                  - service: identity
+                    endpoint: internal
+                  - service: oslo_messaging
+                    endpoint: internal
+              sink:
+                jobs:
+                  - designate-db-sync
+                services:
+                  - service: oslo_db
+                    endpoint: internal
+                  - service: identity
+                    endpoint: internal
+                  - service: oslo_messaging
+                    endpoint: internal
+
     # ==========================================================
-    # Wave 1: Redis + PowerDNS (인프라 서비스, 독립)
+    # Phase 3: Redis + PowerDNS (idempotent)
     # ==========================================================
-    - name: "[Wave 1] Redis 배포 (Octavia TaskFlow jobboard)"
+    - name: "[Phase 3] Redis 배포"
       shell: >
         helm upgrade --install redis openstack-helm/redis
         --namespace=openstack
+        --timeout=300s
       changed_when: true
 
-    - name: "[Wave 1] PowerDNS 배포 (Designate 백엔드)"
+    - name: "[Phase 3] PowerDNS 배포"
       shell: >
         helm upgrade --install powerdns openstack-helm/powerdns
         --namespace=openstack
+        --timeout=300s
       changed_when: true
 
-    - name: "[Wave 1] 파드 대기 (Redis + PowerDNS)"
+    - name: "[Phase 3] Redis + PowerDNS 파드 대기"
       shell: helm osh wait-for-pods openstack
       retries: 30
       delay: 10
@@ -137,23 +375,124 @@
       changed_when: false
 
     # ==========================================================
-    # Wave 2: Octavia + Designate (Keystone 필요, Wave 1 완료 후)
+    # Phase 4: RabbitMQ vhost/user 수동 생성 (차트 rabbit-init 버그 워크어라운드)
     # ==========================================================
-    - name: "[Wave 2] Octavia 배포 (OVN provider mode)"
+    - name: "[Phase 4] Octavia RabbitMQ vhost 생성"
+      shell: |
+        kubectl exec -n openstack rabbitmq-rabbitmq-0 -c rabbitmq -- \
+          rabbitmqctl add_vhost octavia 2>/dev/null || true
+        echo "DONE"
+      register: rmq_octavia_vhost
+      changed_when: "'DONE' in rmq_octavia_vhost.stdout"
+
+    - name: "[Phase 4] Octavia RabbitMQ user 생성 + 권한 설정"
+      shell: |
+        kubectl exec -n openstack rabbitmq-rabbitmq-0 -c rabbitmq -- \
+          rabbitmqctl add_user octavia password 2>/dev/null || true
+        kubectl exec -n openstack rabbitmq-rabbitmq-0 -c rabbitmq -- \
+          rabbitmqctl set_permissions -p octavia octavia ".*" ".*" ".*"
+        echo "DONE"
+      register: rmq_octavia_user
+      changed_when: "'DONE' in rmq_octavia_user.stdout"
+
+    - name: "[Phase 4] Designate RabbitMQ vhost 생성"
+      shell: |
+        kubectl exec -n openstack rabbitmq-rabbitmq-0 -c rabbitmq -- \
+          rabbitmqctl add_vhost designate 2>/dev/null || true
+        echo "DONE"
+      register: rmq_designate_vhost
+      changed_when: "'DONE' in rmq_designate_vhost.stdout"
+
+    - name: "[Phase 4] Designate RabbitMQ user 생성 + 권한 설정"
+      shell: |
+        kubectl exec -n openstack rabbitmq-rabbitmq-0 -c rabbitmq -- \
+          rabbitmqctl add_user designate password 2>/dev/null || true
+        kubectl exec -n openstack rabbitmq-rabbitmq-0 -c rabbitmq -- \
+          rabbitmqctl set_permissions -p designate designate ".*" ".*" ".*"
+        echo "DONE"
+      register: rmq_designate_user
+      changed_when: "'DONE' in rmq_designate_user.stdout"
+
+    - name: "[Phase 4] RabbitMQ vhost 확인"
+      shell: kubectl exec -n openstack rabbitmq-rabbitmq-0 -c rabbitmq -- rabbitmqctl list_vhosts --formatter json
+      register: rmq_vhosts
+      changed_when: false
+
+    - name: "[Phase 4] vhost 목록"
+      debug:
+        msg: "{{ (rmq_vhosts.stdout | from_json) | map(attribute='name') | list }}"
+
+    # ==========================================================
+    # Phase 5: Keystone user/service/endpoint 수동 생성 (차트 ks-user 버그 워크어라운드)
+    # ==========================================================
+    - name: "[Phase 5] Octavia Keystone 리소스 생성"
+      shell: |
+        kubectl exec -n openstack deploy/heat-api -c heat-api -- bash -c '
+          export {{ ks_auth_env }}
+          openstack user create --or-show --domain service --password password octavia -f value -c id
+          openstack role add --user octavia --user-domain service --project service --project-domain service admin 2>/dev/null || true
+          openstack service create --or-show --name octavia --description "OpenStack Load Balancer" load-balancer -f value -c id
+          INTERNAL_URL=https://octavia-api.openstack.svc.cluster.local:9876
+          PUBLIC_URL=https://octavia.openstack.svc.cluster.local
+          for INTF in internal public; do
+            if [ "$INTF" = "internal" ]; then URL=$INTERNAL_URL; else URL=$PUBLIC_URL; fi
+            EXISTING=$(openstack endpoint list --service octavia --interface $INTF --region RegionOne -f value -c ID 2>/dev/null | head -1)
+            if [ -n "$EXISTING" ]; then
+              echo "Endpoint $INTF already exists: $EXISTING"
+            else
+              openstack endpoint create --region RegionOne octavia $INTF $URL -f value -c id
+            fi
+          done
+          echo "OCTAVIA_KS_DONE"
+        '
+      register: octavia_ks
+      changed_when: "'OCTAVIA_KS_DONE' in octavia_ks.stdout"
+      failed_when: "'OCTAVIA_KS_DONE' not in octavia_ks.stdout"
+
+    - name: "[Phase 5] Octavia Keystone 결과"
+      debug:
+        var: octavia_ks.stdout_lines
+
+    - name: "[Phase 5] Designate Keystone 리소스 생성"
+      shell: |
+        kubectl exec -n openstack deploy/heat-api -c heat-api -- bash -c '
+          export {{ ks_auth_env }}
+          openstack user create --or-show --domain service --password password designate -f value -c id
+          openstack role add --user designate --user-domain service --project service --project-domain service admin 2>/dev/null || true
+          openstack service create --or-show --name designate --description "OpenStack DNS" dns -f value -c id
+          INTERNAL_URL=https://designate-api.openstack.svc.cluster.local:9001
+          PUBLIC_URL=https://designate.openstack.svc.cluster.local
+          for INTF in internal public; do
+            if [ "$INTF" = "internal" ]; then URL=$INTERNAL_URL; else URL=$PUBLIC_URL; fi
+            EXISTING=$(openstack endpoint list --service designate --interface $INTF --region RegionOne -f value -c ID 2>/dev/null | head -1)
+            if [ -n "$EXISTING" ]; then
+              echo "Endpoint $INTF already exists: $EXISTING"
+            else
+              openstack endpoint create --region RegionOne designate $INTF $URL -f value -c id
+            fi
+          done
+          echo "DESIGNATE_KS_DONE"
+        '
+      register: designate_ks
+      changed_when: "'DESIGNATE_KS_DONE' in designate_ks.stdout"
+      failed_when: "'DESIGNATE_KS_DONE' not in designate_ks.stdout"
+
+    - name: "[Phase 5] Designate Keystone 결과"
+      debug:
+        var: designate_ks.stdout_lines
+
+    # ==========================================================
+    # Phase 6: Octavia 배포
+    # ==========================================================
+    - name: "[Phase 6] Octavia 배포"
       shell: >
         helm upgrade --install octavia openstack-helm/octavia
         --namespace=openstack
+        --timeout=600s
         $(helm osh get-values-overrides -p {{ overrides_dir }} -c octavia octavia_ovn {{ features }})
       changed_when: true
 
-    - name: "[Wave 2] Designate 배포 (PowerDNS 백엔드)"
-      shell: >
-        helm upgrade --install designate openstack-helm/designate
-        --namespace=openstack
-        $(helm osh get-values-overrides -p {{ overrides_dir }} -c designate {{ features }})
-      changed_when: true
-
-    - name: "[Wave 2] 파드 대기 (Octavia + Designate)"
+    - name: "[Phase 6] Octavia 파드 대기"
       shell: helm osh wait-for-pods openstack
       retries: 60
       delay: 15
@@ -161,10 +500,47 @@
       until: result.rc == 0
       changed_when: false
 
+    - name: "[Phase 6] Octavia 파드 상태"
+      shell: kubectl get pods -n openstack -l application=octavia --no-headers
+      register: octavia_pods
+      changed_when: false
+
+    - name: "[Phase 6] Octavia 파드 출력"
+      debug:
+        var: octavia_pods.stdout_lines
+
     # ==========================================================
-    # Wave 3: Neutron 업그레이드 (Designate DNS 드라이버 추가)
+    # Phase 7: Designate 배포
     # ==========================================================
-    - name: Neutron Designate 통합 오버라이드 생성
+    - name: "[Phase 7] Designate 배포"
+      shell: >
+        helm upgrade --install designate openstack-helm/designate
+        --namespace=openstack
+        --timeout=600s
+        $(helm osh get-values-overrides -p {{ overrides_dir }} -c designate {{ features }})
+      changed_when: true
+
+    - name: "[Phase 7] Designate 파드 대기"
+      shell: helm osh wait-for-pods openstack
+      retries: 60
+      delay: 15
+      register: result
+      until: result.rc == 0
+      changed_when: false
+
+    - name: "[Phase 7] Designate 파드 상태"
+      shell: kubectl get pods -n openstack -l application=designate --no-headers
+      register: designate_pods
+      changed_when: false
+
+    - name: "[Phase 7] Designate 파드 출력"
+      debug:
+        var: designate_pods.stdout_lines
+
+    # ==========================================================
+    # Phase 8: Neutron 업그레이드 (Designate DNS 드라이버)
+    # ==========================================================
+    - name: "[Phase 8] Neutron Designate 통합 오버라이드"
       copy:
         dest: "{{ overrides_dir }}/neutron/neutron_designate.yaml"
         content: |
@@ -173,17 +549,58 @@
               DEFAULT:
                 external_dns_driver: designate
 
-    - name: "[Wave 3] Neutron 업그레이드 (Designate DNS 드라이버 활성화)"
+    - name: "[Phase 8] Neutron 업그레이드 (DNS 드라이버 활성화)"
       shell: >
         helm upgrade neutron openstack-helm/neutron
         --namespace=openstack
+        --timeout=600s
         $(helm osh get-values-overrides -p {{ overrides_dir }} -c neutron neutron_simple neutron_designate {{ features }})
       changed_when: true
 
-    - name: "[Wave 3] 전체 파드 대기"
+    - name: "[Phase 8] 전체 파드 대기"
       shell: helm osh wait-for-pods openstack
       retries: 60
       delay: 15
       register: result
       until: result.rc == 0
       changed_when: false
+
+    # ==========================================================
+    # Phase 9: 검증
+    # ==========================================================
+    - name: "[Phase 9] Octavia API 헬스체크"
+      shell: |
+        kubectl exec -n openstack deploy/heat-api -c heat-api -- bash -c '
+          export {{ ks_auth_env }}
+          openstack loadbalancer list -f json 2>&1
+        '
+      register: octavia_check
+      changed_when: false
+      failed_when: false
+
+    - name: "[Phase 9] Octavia API 결과"
+      debug:
+        var: octavia_check.stdout_lines
+
+    - name: "[Phase 9] Designate API 헬스체크"
+      shell: |
+        kubectl exec -n openstack deploy/heat-api -c heat-api -- bash -c '
+          export {{ ks_auth_env }}
+          openstack zone list -f json 2>&1
+        '
+      register: designate_check
+      changed_when: false
+      failed_when: false
+
+    - name: "[Phase 9] Designate API 결과"
+      debug:
+        var: designate_check.stdout_lines
+
+    - name: "[Phase 9] 전체 Helm 릴리스 상태"
+      shell: helm list -n openstack -o json | jq -r '.[] | "\(.name)\t\(.revision)\t\(.status)"'
+      register: helm_releases
+      changed_when: false
+
+    - name: "[Phase 9] Helm 릴리스"
+      debug:
+        var: helm_releases.stdout_lines
