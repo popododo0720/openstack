@@ -13,21 +13,21 @@ resource "openstack_images_image_v2" "cirros" {
 }
 
 # ===========================================
-# 플레이버
+# 플레이버 (Nova bootstrap 표준 스펙)
 # ===========================================
 resource "openstack_compute_flavor_v2" "small" {
   name      = "m1.small"
-  ram       = 512
+  ram       = 2048
   vcpus     = 1
-  disk      = 5
+  disk      = 20
   is_public = true
 }
 
 resource "openstack_compute_flavor_v2" "medium" {
   name      = "m1.medium"
-  ram       = 1024
-  vcpus     = 1
-  disk      = 10
+  ram       = 4096
+  vcpus     = 2
+  disk      = 40
   is_public = true
 }
 
