@@ -115,65 +115,6 @@
         mode: '0600'
         remote_src: yes
 
-    # Manila
-    - name: "manila 디렉토리 생성"
-      file:
-        path: "{{ kolla_config_base }}/manila"
-        state: directory
-        mode: '0755'
-
-    - name: "manila - ceph.conf 복사"
-      copy:
-        src: /etc/ceph/ceph.conf
-        dest: "{{ kolla_config_base }}/manila/ceph.conf"
-        remote_src: yes
-
-    - name: "manila - keyring 복사"
-      copy:
-        src: /etc/ceph/ceph.client.manila.keyring
-        dest: "{{ kolla_config_base }}/manila/ceph.client.manila.keyring"
-        mode: '0600'
-        remote_src: yes
-
-    # Zun
-    - name: "zun 디렉토리 생성"
-      file:
-        path: "{{ kolla_config_base }}/zun"
-        state: directory
-        mode: '0755'
-
-    - name: "zun-compute 디렉토리 생성"
-      file:
-        path: "{{ kolla_config_base }}/zun/zun-compute"
-        state: directory
-        mode: '0755'
-
-    - name: "zun - ceph.conf 복사"
-      copy:
-        src: /etc/ceph/ceph.conf
-        dest: "{{ kolla_config_base }}/zun/ceph.conf"
-        remote_src: yes
-
-    - name: "zun - keyring 복사"
-      copy:
-        src: /etc/ceph/ceph.client.cinder.keyring
-        dest: "{{ kolla_config_base }}/zun/ceph.client.cinder.keyring"
-        mode: '0600'
-        remote_src: yes
-
-    - name: "zun-compute - ceph.conf 복사"
-      copy:
-        src: /etc/ceph/ceph.conf
-        dest: "{{ kolla_config_base }}/zun/zun-compute/ceph.conf"
-        remote_src: yes
-
-    - name: "zun-compute - keyring 복사"
-      copy:
-        src: /etc/ceph/ceph.client.cinder.keyring
-        dest: "{{ kolla_config_base }}/zun/zun-compute/ceph.client.cinder.keyring"
-        mode: '0600'
-        remote_src: yes
-
     # 복사된 ceph.conf 들여쓰기 제거
     - name: "복사된 ceph.conf 들여쓰기 제거"
       shell: find {{ kolla_config_base }} -name "ceph.conf" -exec sed -i 's/^[[:space:]]*//' {} \;
@@ -195,13 +136,7 @@
       debug:
         msg: "{{ keyring_perms.stdout_lines }}"
 
-    # Zun Docker API override (Docker 29.x requires min API 1.44)
-    - name: "zun.conf 오버라이드 배포"
-      copy:
-        src: /root/openstack-deploy/kolla-config/zun/zun-compute.conf
-        dest: "{{ kolla_config_base }}/zun/zun-compute.conf"
-        mode: '0644'
-
+    # 결과 확인
     - name: "최종 kolla config 구조 확인"
       shell: find {{ kolla_config_base }} -type f | sort
       register: final_structure

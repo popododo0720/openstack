@@ -64,7 +64,7 @@ node_custom_config: "{{ node_config }}/config"
 # All-In-One without haproxy and keepalived, you can set enable_haproxy to no
 # in "OpenStack options" section, and set this value to the IP of your
 # 'network_interface' as set in the Networking section below.
-kolla_internal_vip_address: "10.0.2.110"
+kolla_internal_vip_address: "10.0.2.10"
 
 # This is the DNS name that maps to the kolla_internal_vip_address VIP. By
 # default it is the same as kolla_internal_vip_address.
@@ -110,9 +110,9 @@ docker_namespace: "openstack.kolla"
 # Docker client timeout in seconds.
 #docker_client_timeout: 120
 
-docker_configure_for_zun: "yes"
-containerd_configure_for_zun: "yes"
-containerd_grpc_gid: 42463
+#docker_configure_for_zun: "no"
+#containerd_configure_for_zun: "no"
+#containerd_grpc_gid: 42463
 
 ###################
 # Messaging options
@@ -134,19 +134,19 @@ containerd_grpc_gid: 42463
 # Yet another way to workaround the naming problem is to create a bond for the
 # interface on all hosts and give the bond name here. Similar strategy can be
 # followed for other types of interfaces.
-network_interface: "enp2s0"
+network_interface: "enp216s0f3"
 
 # These can be adjusted for even more customization. The default is the same as
 # the 'network_interface'. These interfaces must contain an IP address.
-kolla_external_vip_interface: "enp4s0"
-kolla_internal_vip_interface: "enp2s0"
+kolla_external_vip_interface: "enp216s0f1"
+kolla_internal_vip_interface: "enp216s0f3"
 
 #api_interface: "{{ network_interface }}"
 #swift_storage_interface: "{{ network_interface }}"
 #swift_replication_interface: "{{ swift_storage_interface }}"
-#tunnel_interface: "{{ network_interface }}"
+tunnel_interface: "enp216s0f2"
 #dns_interface: "{{ network_interface }}"
-octavia_network_interface: "octavia-hm"
+#octavia_network_interface: "octavia-hm"
 
 # Configure the address family (AF) per network.
 # Valid options are [ ipv4, ipv6 ]
@@ -165,7 +165,7 @@ octavia_network_interface: "octavia-hm"
 # though an IP address can exist on this interface, it will be unusable in most
 # configurations. It is recommended this interface not be configured with any IP
 # addresses for that reason.
-neutron_external_interface: "enp4s0,enp5s0"
+neutron_external_interface: "enp216s0f1"
 
 # Valid options are [ openvswitch, ovn, linuxbridge, vmware_nsxv, vmware_nsxv3, vmware_nsxp, vmware_dvs ]
 # if vmware_nsxv3 or vmware_nsxv3 is selected, enable_openvswitch MUST be set to "no" (default is yes)
@@ -174,8 +174,8 @@ neutron_external_interface: "enp4s0,enp5s0"
 neutron_plugin_agent: "ovn"
 
 # VLAN Provider Network 설정
-neutron_bridge_name: "br-ex,br-mgmt"
-neutron_physical_networks: "physnet1,physnet2"
+neutron_bridge_name: "br-ex"
+neutron_physical_networks: "physnet1"
 
 # Valid options are [ internal, infoblox ]
 #neutron_ipam_driver: "internal"
@@ -353,7 +353,7 @@ enable_cinder_backend_nfs: "no"
 #enable_cloudkitty: "no"
 #enable_collectd: "no"
 #enable_cyborg: "no"
-enable_designate: "yes"
+enable_designate: "no"
 #enable_destroy_images: "no"
 #enable_etcd: "no"
 enable_fluentd: "yes"
@@ -386,16 +386,16 @@ enable_horizon_zun: "no"
 #enable_ironic_neutron_agent: "{{ enable_neutron | bool and enable_ironic | bool }}"
 #enable_ironic_prometheus_exporter: "{{ enable_ironic | bool and enable_prometheus | bool }}"
 #enable_iscsid: "{{ enable_cinder | bool and enable_cinder_backend_iscsi | bool }}"
-enable_kuryr: "yes"
-enable_magnum: "yes"
-enable_manila: "yes"
+#enable_kuryr: "no"
+#enable_magnum: "no"
+#enable_manila: "no"
 #enable_manila_backend_generic: "no"
 #enable_manila_backend_hnas: "no"
-enable_manila_backend_cephfs_native: "yes"
+#enable_manila_backend_cephfs_native: "no"
 #enable_manila_backend_cephfs_nfs: "no"
 #enable_manila_backend_glusterfs_nfs: "no"
 enable_mariabackup: "yes"
-enable_masakari: "yes"
+#enable_masakari: "no"
 #enable_mistral: "no"
 #enable_multipathd: "no"
 #enable_neutron_vpnaas: "no"
@@ -414,10 +414,10 @@ enable_neutron_provider_networks: "yes"
 #enable_neutron_port_forwarding: "no"
 #enable_nova_serialconsole_proxy: "no"
 #enable_nova_ssh: "yes"
-enable_octavia: "yes"
-octavia_provider_drivers: "amphora:Amphora provider,ovn:OVN provider"
-octavia_network_type: "provider"
-enable_octavia_driver_agent: "yes"
+#enable_octavia: "no"
+#octavia_provider_drivers: "amphora:Amphora provider,ovn:OVN provider"
+#octavia_network_type: "provider"
+#enable_octavia_driver_agent: "no"
 #enable_octavia_jobboard: "{{ enable_octavia | bool and 'amphora' in octavia_provider_drivers }}"
 #enable_opensearch: "{{ enable_central_logging | bool or enable_osprofiler | bool or (enable_cloudkitty | bool and cloudkitty_storage_backend == 'opensearch') }}"
 #enable_opensearch_dashboards: "{{ enable_opensearch | bool }}"
@@ -435,11 +435,11 @@ enable_skyline: "yes"
 #enable_swift_s3api: "no"
 #enable_tacker: "no"
 #enable_telegraf: "no"
-enable_trove: "yes"
+#enable_trove: "no"
 #enable_trove_singletenant: "no"
 #enable_venus: "no"
 #enable_watcher: "no"
-enable_zun: "yes"
+#enable_zun: "no"
 
 #############
 # S3 options
@@ -501,8 +501,8 @@ ceph_nova_pool_name: "vms"
 #ceph_gnocchi_keyring: "client.{{ ceph_gnocchi_user }}.keyring"
 #ceph_gnocchi_pool_name: "gnocchi"
 # Manila
-ceph_manila_user: "manila"
-ceph_manila_keyring: "client.{{ ceph_manila_user }}.keyring"
+#ceph_manila_user: "manila"
+#ceph_manila_keyring: "client.{{ ceph_manila_user }}.keyring"
 
 #############################
 # Keystone - Identity Options
@@ -608,10 +608,10 @@ cinder_backup_driver: "ceph"
 # Designate options
 ###################
 # Valid options are [ bind9 ]
-designate_backend: "bind9"
-designate_ns_record:
-  - "ns1.cloud.internal"
-neutron_dns_domain: "cloud.internal."
+#designate_backend: "bind9"
+#designate_ns_record:
+#  - "ns1.cloud.internal"
+#neutron_dns_domain: "cloud.internal."
 # Valid options are [ '', redis ]
 #designate_coordination_backend: "{{ 'redis' if enable_redis|bool else '' }}"
 
@@ -643,7 +643,7 @@ nova_compute_virt_type: "kvm"
 neutron_ovn_distributed_fip: "yes"
 
 # Enable DHCP agent(s) to use with OVN
-neutron_ovn_dhcp_agent: "yes"
+neutron_ovn_dhcp_agent: "no"
 
 #############################
 # Horizon - Dashboard Options
@@ -690,7 +690,7 @@ neutron_ovn_dhcp_agent: "yes"
 # CephFS backend configuration.
 # External Ceph FS name.
 # By default this is empty to allow Manila to auto-find the first FS available.
-manila_cephfs_filesystem_name: "cephfs"
+#manila_cephfs_filesystem_name: "cephfs"
 
 # Gluster backend configuration
 # The option of glusterfs share layout can be directory or volume
@@ -831,63 +831,63 @@ enable_prometheus_openstack_exporter: "{{ enable_prometheus | bool }}"
 # - ephemeral (optional)
 # - swap (optional)
 # - extra_specs (optional)
-octavia_amp_flavor:
-  name: "amphora"
-  is_public: no
-  vcpus: 2
-  ram: 2048
-  disk: 5
-
-# Octavia security groups. lb-mgmt-sec-grp is for amphorae.
-#octavia_amp_security_groups:
-#    mgmt-sec-grp:
-#      name: "lb-mgmt-sec-grp"
-#      rules:
-#        - protocol: icmp
-#        - protocol: tcp
-#          src_port: 22
-#          dst_port: 22
-#        - protocol: tcp
-#          src_port: "{{ octavia_amp_listen_port }}"
-#          dst_port: "{{ octavia_amp_listen_port }}"
-
-# Octavia management network.
-# See os_network and os_subnet for details. Supported parameters:
-# - external (optional)
-# - mtu (optional)
-# - name
-# - provider_network_type (optional)
-# - provider_physical_network (optional)
-# - provider_segmentation_id (optional)
-# - shared (optional)
-# - subnet
-# The subnet parameter has the following supported parameters:
-# - allocation_pool_start (optional)
-# - allocation_pool_end (optional)
-# - cidr
-# - enable_dhcp (optional)
-# - gateway_ip (optional)
-# - name
-# - no_gateway_ip (optional)
-# - ip_version (optional)
-# - ipv6_address_mode (optional)
-# - ipv6_ra_mode (optional)
-octavia_amp_network:
-  name: lb-mgmt-net
-  provider_network_type: vlan
-  provider_segmentation_id: 4000
-  provider_physical_network: physnet2
-  shared: false
-  subnet:
-    name: lb-mgmt-subnet
-    cidr: "192.168.40.0/24"
-    allocation_pool_start: "192.168.40.100"
-    allocation_pool_end: "192.168.40.200"
-    no_gateway_ip: yes
-    enable_dhcp: yes
-
-# Octavia management network subnet CIDR.
-octavia_amp_network_cidr: 192.168.40.0/24
+#octavia_amp_flavor:
+#  name: "amphora"
+#  is_public: no
+#  vcpus: 2
+#  ram: 2048
+#  disk: 5
+#
+## Octavia security groups. lb-mgmt-sec-grp is for amphorae.
+##octavia_amp_security_groups:
+##    mgmt-sec-grp:
+##      name: "lb-mgmt-sec-grp"
+##      rules:
+##        - protocol: icmp
+##        - protocol: tcp
+##          src_port: 22
+##          dst_port: 22
+##        - protocol: tcp
+##          src_port: "{{ octavia_amp_listen_port }}"
+##          dst_port: "{{ octavia_amp_listen_port }}"
+#
+## Octavia management network.
+## See os_network and os_subnet for details. Supported parameters:
+## - external (optional)
+## - mtu (optional)
+## - name
+## - provider_network_type (optional)
+## - provider_physical_network (optional)
+## - provider_segmentation_id (optional)
+## - shared (optional)
+## - subnet
+## The subnet parameter has the following supported parameters:
+## - allocation_pool_start (optional)
+## - allocation_pool_end (optional)
+## - cidr
+## - enable_dhcp (optional)
+## - gateway_ip (optional)
+## - name
+## - no_gateway_ip (optional)
+## - ip_version (optional)
+## - ipv6_address_mode (optional)
+## - ipv6_ra_mode (optional)
+#octavia_amp_network:
+#  name: lb-mgmt-net
+#  provider_network_type: vlan
+#  provider_segmentation_id: 4000
+#  provider_physical_network: physnet2
+#  shared: false
+#  subnet:
+#    name: lb-mgmt-subnet
+#    cidr: "192.168.40.0/24"
+#    allocation_pool_start: "192.168.40.100"
+#    allocation_pool_end: "192.168.40.200"
+#    no_gateway_ip: yes
+#    enable_dhcp: yes
+#
+## Octavia management network subnet CIDR.
+#octavia_amp_network_cidr: 192.168.40.0/24
 
 #octavia_amp_image_tag: "amphora"
 
@@ -917,16 +917,9 @@ octavia_amp_network_cidr: 192.168.40.0/24
 
 
 
-redis_sentinel_service_name: "kolla"
-
-# Sentinel 서버 주소 목록
-redis_sentinel_hosts:
-  - 10.0.2.111
-  - 10.0.2.112
-  - 10.0.2.113
 
 
-kuryr_enable_tls: "yes"
+#kuryr_enable_tls: "no"
 
 # Fix: Trove healthcheck TLS scheme (Kolla bug #2136977)
-trove_api_healthcheck_test: ["CMD-SHELL", "healthcheck_curl {{ 'https' if trove_enable_tls_backend | bool else 'http' }}://{{ api_interface_address | put_address_in_context('url') }}:{{ trove_api_port }}"]
+# trove healthcheck removed (trove disabled)

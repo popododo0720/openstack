@@ -96,22 +96,14 @@
         state: directory
         recurse: yes
 
-    - name: "Docker systemd override (Zun TCP 소켓)"
+    - name: "Docker systemd override"
       copy:
         content: |
           [Service]
           ExecStart=
-          ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock -H tcp://{{ internal_ip }}:2375
+          ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
         dest: /etc/systemd/system/docker.service.d/kolla.conf
         mode: '0644'
-
-    - name: "containerd 설정 (Zun GID)"
-      copy:
-        content: |
-          [grpc]
-            gid = 42463
-        dest: /etc/containerd/config.toml
-        mode: '0660'
 
     - name: "systemd 리로드"
       systemd:
