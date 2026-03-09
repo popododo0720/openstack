@@ -1,5 +1,6 @@
 ---
 # OpenStack용 Ceph 인증 키링 생성 및 배포
+# Nova는 Cinder 키링 공유 (Kolla 기본값)
 - name: "Ceph 인증 키 생성 (stack1)"
   hosts: stack1
   become: yes
@@ -11,8 +12,6 @@
         caps: "mon 'profile rbd' osd 'profile rbd pool=volumes, profile rbd pool=vms, profile rbd-read-only pool=images' mgr 'profile rbd pool=volumes, profile rbd pool=vms'"
       - name: "client.cinder-backup"
         caps: "mon 'profile rbd' osd 'profile rbd pool=backups' mgr 'profile rbd pool=backups'"
-      - name: "client.nova"
-        caps: "mon 'profile rbd' osd 'profile rbd pool=vms, profile rbd pool=volumes, profile rbd-read-only pool=images' mgr 'profile rbd pool=vms, profile rbd pool=volumes'"
 
     target_hosts:
       - stack2
@@ -33,9 +32,6 @@
     - name: "키링 파일 생성 - cinder-backup"
       shell: cephadm shell -- ceph auth get client.cinder-backup > /etc/ceph/ceph.client.cinder-backup.keyring
 
-    - name: "키링 파일 생성 - nova"
-      shell: cephadm shell -- ceph auth get client.nova > /etc/ceph/ceph.client.nova.keyring
-
     - name: "키링 파일 권한 설정"
       file:
         path: "/etc/ceph/{{ item }}"
@@ -44,7 +40,6 @@
         - ceph.client.glance.keyring
         - ceph.client.cinder.keyring
         - ceph.client.cinder-backup.keyring
-        - ceph.client.nova.keyring
 
     - name: "키링 파일 확인"
       command: ls -la /etc/ceph/

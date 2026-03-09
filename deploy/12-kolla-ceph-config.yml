@@ -1,5 +1,6 @@
 ---
 # Kolla config에 Ceph 키링 배포
+# Nova는 Cinder 키링 공유 (Kolla 기본값: ceph_nova_user = ceph_cinder_user)
 - name: "Kolla Ceph 설정 배포"
   hosts: stack1
   become: yes
@@ -88,7 +89,7 @@
         mode: '0600'
         remote_src: yes
 
-    # Nova
+    # Nova (Cinder 키링 공유)
     - name: "nova 디렉토리 생성"
       file:
         path: "{{ kolla_config_base }}/nova"
@@ -101,17 +102,10 @@
         dest: "{{ kolla_config_base }}/nova/ceph.conf"
         remote_src: yes
 
-    - name: "nova - cinder keyring 복사"
+    - name: "nova - cinder keyring 복사 (nova는 cinder 키링 공유)"
       copy:
         src: /etc/ceph/ceph.client.cinder.keyring
         dest: "{{ kolla_config_base }}/nova/ceph.client.cinder.keyring"
-        mode: '0600'
-        remote_src: yes
-
-    - name: "nova - nova keyring 복사"
-      copy:
-        src: /etc/ceph/ceph.client.nova.keyring
-        dest: "{{ kolla_config_base }}/nova/ceph.client.nova.keyring"
         mode: '0600'
         remote_src: yes
 
@@ -136,7 +130,6 @@
       debug:
         msg: "{{ keyring_perms.stdout_lines }}"
 
-    # 결과 확인
     - name: "최종 kolla config 구조 확인"
       shell: find {{ kolla_config_base }} -type f | sort
       register: final_structure
