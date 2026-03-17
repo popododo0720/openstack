@@ -11,9 +11,9 @@
         dest: /etc/kolla/globals.yml.backup
         remote_src: yes
 
-    - name: "globals.yml 복사 (원본 가이드에서)"
+    - name: "globals.yml 복사"
       copy:
-        src: /root/openstack-deploy/globals.yml
+        src: /root/openstack/deploy/globals.yml
         dest: /etc/kolla/globals.yml
 
     - name: "네트워크 인터페이스 수정 - network_interface"

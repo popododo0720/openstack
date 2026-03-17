@@ -175,7 +175,7 @@ neutron_plugin_agent: "ovn"
 
 # VLAN Provider Network 설정
 neutron_bridge_name: "br-ex"
-neutron_physical_networks: "physnet1"
+neutron_physical_networks: "external"
 
 # Valid options are [ internal, infoblox ]
 #neutron_ipam_driver: "internal"
@@ -319,7 +319,7 @@ enable_openstack_core: "yes"
 # These roles are required for Kolla to be operation, however a savvy deployer
 # could disable some of these required roles and run their own services.
 #enable_glance: "{{ enable_openstack_core | bool }}"
-#enable_hacluster: "no"
+enable_hacluster: "yes"
 enable_haproxy: "yes"
 #enable_keepalived: "{{ enable_haproxy | bool }}"
 #enable_keystone: "{{ enable_openstack_core | bool }}"
@@ -395,7 +395,7 @@ enable_horizon_zun: "no"
 #enable_manila_backend_cephfs_nfs: "no"
 #enable_manila_backend_glusterfs_nfs: "no"
 enable_mariabackup: "yes"
-#enable_masakari: "no"
+enable_masakari: "yes"
 #enable_mistral: "no"
 #enable_multipathd: "no"
 #enable_neutron_vpnaas: "no"
@@ -785,7 +785,7 @@ enable_prometheus_openstack_exporter: "{{ enable_prometheus | bool }}"
 #prometheus_external_labels:
 
 # List of extra parameters passed to prometheus. You can add as many to the list.
-#prometheus_cmdline_extras:
+prometheus_cmdline_extras: "--storage.tsdb.retention.time=7d"
 
 # List of extra parameters passed to cAdvisor. By default system cgroups
 # and container labels are not exposed to reduce time series cardinality.
@@ -801,9 +801,10 @@ enable_prometheus_openstack_exporter: "{{ enable_prometheus | bool }}"
 
 # Example of setting endpoints for prometheus ceph mgr exporter.
 # You should add all ceph mgr's in your external ceph deployment.
-#prometheus_ceph_mgr_exporter_endpoints:
-#  - host1:port1
-#  - host2:port2
+prometheus_ceph_mgr_exporter_endpoints:
+  - "192.168.73.11:9283"
+  - "192.168.73.12:9283"
+  - "192.168.73.13:9283"
 
 ##########
 # Telegraf
@@ -923,3 +924,22 @@ enable_prometheus_openstack_exporter: "{{ enable_prometheus | bool }}"
 
 # Fix: Trove healthcheck TLS scheme (Kolla bug #2136977)
 # trove healthcheck removed (trove disabled)
+
+
+masakari_hostmonitor_extra_volumes:
+  - "hacluster_pacemaker:/var/lib/pacemaker:ro"
+
+skyline_console_extra_volumes:
+  - "/opt/skyline-branding/favicon.ico:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/favicon.ico:ro"
+  - "/opt/skyline-branding/logo.png:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/asset/image/logo.png:ro"
+  - "/opt/skyline-branding/loginRightLogo.png:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/asset/image/loginRightLogo.png:ro"
+  - "/opt/skyline-branding/cloud-logo.svg:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/asset/image/cloud-logo.svg:ro"
+  - "/opt/skyline-branding/cloud-logo-white.svg:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/asset/image/cloud-logo-white.svg:ro"
+  - "/opt/skyline-branding/index.html:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/index.html:ro"
+
+grafana_extra_volumes:
+  - "/opt/grafana-provisioning/prometheus.yaml:/etc/grafana/provisioning/datasources/prometheus-custom.yaml:ro"
+  - "/opt/grafana-provisioning/mysql.yaml:/etc/grafana/provisioning/datasources/mysql.yaml:ro"
+  - "/opt/grafana-provisioning/victoriametrics.yaml:/etc/grafana/provisioning/datasources/victoriametrics.yaml:ro"
+  - "/opt/grafana-provisioning/dashboards.yaml:/etc/grafana/provisioning/dashboards/custom.yaml:ro"
+  - "/opt/grafana-dashboards:/var/lib/grafana/custom-dashboards:ro"

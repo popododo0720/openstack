@@ -18,3 +18,70 @@
     - name: "post-deploy 결과"
       debug:
         msg: "{{ postdeploy_result.stdout_lines[-10:] }}"
+
+- name: "OpenStack CLI 설치 (3대)"
+  hosts: stack1,stack2,stack3
+  become: yes
+  vars:
+    venv_path: "/root/kolla-venv"
+
+  tasks:
+    - name: "kolla venv 존재 확인"
+      stat:
+        path: "{{ venv_path }}/bin/activate"
+      register: venv_check
+
+    - name: "kolla venv 생성 (없는 경우)"
+      command: python3 -m venv {{ venv_path }}
+      when: not venv_check.stat.exists
+
+    - name: "openstackclient 설치"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        pip install python-openstackclient
+      args:
+        executable: /bin/bash
+      register: osc_install
+
+    - name: "설치 확인"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        openstack --version
+      args:
+        executable: /bin/bash
+      register: osc_version
+
+    - name: "버전 출력"
+      debug:
+        msg: "{{ osc_version.stdout }}"
+
+    - name: "admin-openrc.sh 복사"
+      copy:
+        src: /etc/kolla/admin-openrc.sh
+        dest: /etc/kolla/admin-openrc.sh
+        mode: '0600'
+      delegate_to: stack1
+      run_once: true
+
+    - name: "admin-openrc.sh 배포 (stack2, stack3)"
+      copy:
+        src: /etc/kolla/admin-openrc.sh
+        dest: /etc/kolla/admin-openrc.sh
+        mode: '0600'
+      when: inventory_hostname != 'stack1'
+
+    - name: "activate-openstack 스크립트 생성"
+      copy:
+        dest: /root/activate-openstack
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          source /root/kolla-venv/bin/activate
+          source /etc/kolla/admin-openrc.sh
+          echo "OpenStack CLI 활성화됨"
+
+    - name: "완료 메시지"
+      debug:
+        msg:
+          - "OpenStack CLI 설치 완료!"
+          - "사용법: source /root/activate-openstack"

@@ -106,3 +106,64 @@
           - "활성화: source /root/activate-kolla"
           - "설정파일: /etc/kolla/"
           - "다음: 11-kolla-config.yml 실행"
+
+    - name: "Masakari hostmonitor 버그픽스 패치 (LP#2101026 - privileged + pacemaker volume)"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        DEFAULTS="{{ venv_path }}/share/kolla-ansible/ansible/roles/masakari/defaults/main.yml"
+        HANDLERS="{{ venv_path }}/share/kolla-ansible/ansible/roles/masakari/handlers/main.yml"
+        # defaults: hostmonitor에 privileged: True 추가
+        sed -i '/^  masakari-hostmonitor:/,/dimensions:/{/dimensions:/i\    privileged: True
+        }' "$DEFAULTS"
+        # handlers: hostmonitor restart에 privileged 라인 추가
+        sed -i '/Restart masakari-hostmonitor/,/dimensions/{/ipc_mode/a\    privileged: "{{ service.privileged | default(True) }}"
+        }' "$HANDLERS"
+      args:
+        executable: /bin/bash
+
+    - name: "Masakari hostmonitor sudoers 패치 (crmadmin/cibadmin NOPASSWD 추가)"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        SUDOERS_TPL="{{ venv_path }}/share/kolla-ansible/ansible/roles/masakari/templates/masakari_monitors_sudoers.j2"
+        if [ -f "$SUDOERS_TPL" ]; then
+          if ! grep -q crmadmin "$SUDOERS_TPL"; then
+            echo 'masakari ALL=(root) NOPASSWD: /usr/sbin/crmadmin *' >> "$SUDOERS_TPL"
+            echo 'masakari ALL=(root) NOPASSWD: /usr/sbin/cibadmin --query' >> "$SUDOERS_TPL"
+            echo 'Patched sudoers template'
+          else
+            echo 'Already patched'
+          fi
+        else
+          echo 'Template not found, will patch containers directly after deploy'
+        fi
+      args:
+        executable: /bin/bash
+
+- name: "Skyline 브랜딩 파일 배포"
+  hosts: all_nodes
+  become: yes
+
+  vars:
+    branding_src: "/root/openstack/deploy/skyline-branding"
+    branding_dest: "/opt/skyline-branding"
+
+  tasks:
+    - name: "브랜딩 디렉토리 생성"
+      file:
+        path: "{{ branding_dest }}"
+        state: directory
+        mode: "0755"
+
+    - name: "브랜딩 파일 복사"
+      copy:
+        src: "{{ branding_src }}/{{ item }}"
+        dest: "{{ branding_dest }}/{{ item }}"
+        mode: "0644"
+      loop:
+        - favicon.ico
+        - logo.png
+        - loginRightLogo.png
+        - cloud-logo.svg
+        - cloud-logo-white.svg
+        - index.html
+

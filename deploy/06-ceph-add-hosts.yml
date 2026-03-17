@@ -53,3 +53,21 @@
     - name: "호스트 목록 출력"
       debug:
         msg: "{{ host_list.stdout_lines }}"
+
+- name: "_admin 라벨 추가 (HA 관리)"
+  hosts: stack1
+  become: yes
+  tasks:
+    - name: "stack2에 _admin 라벨 추가"
+      command: cephadm shell -- ceph orch host label add stack2 _admin
+
+    - name: "stack3에 _admin 라벨 추가"
+      command: cephadm shell -- ceph orch host label add stack3 _admin
+
+    - name: "라벨 확인"
+      command: cephadm shell -- ceph orch host ls
+      register: host_labels
+
+    - name: "호스트 라벨 출력"
+      debug:
+        msg: "{{ host_labels.stdout_lines }}"

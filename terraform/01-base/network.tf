@@ -8,7 +8,7 @@ resource "openstack_networking_network_v2" "external" {
   external       = true
   segments {
     network_type     = "flat"
-    physical_network = "physnet1"
+    physical_network = "external"
   }
 }
 

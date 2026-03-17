@@ -4,7 +4,7 @@
   become: yes
 
   vars:
-    osd_memory_target: 8589934592  # 8GB per OSD
+    osd_memory_target: 4294967296  # 4GB per OSD
 
   tasks:
     - name: "Ceph 부트스트랩"
