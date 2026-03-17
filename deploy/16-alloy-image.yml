@@ -7,7 +7,7 @@
 #   apt-get install -y libguestfs-tools
 
 - name: "Alloy 내장 Ubuntu 이미지 생성 및 등록"
-  hosts: deploy_server
+  hosts: localhost
   become: yes
 
   vars:
@@ -39,10 +39,25 @@
       register: download_result
 
     - name: "베이스 이미지 복사 (원본 보존)"
+
+    - name: "이미지 디스크 5GB로 확장"
+      shell: "qemu-img resize {{ alloy_image_path }} 5G"
       copy:
+
+    - name: "이미지 디스크 5GB로 확장"
+      shell: "qemu-img resize {{ alloy_image_path }} 5G"
         src: "{{ base_image_path }}"
+
+    - name: "이미지 디스크 5GB로 확장"
+      shell: "qemu-img resize {{ alloy_image_path }} 5G"
         dest: "{{ alloy_image_path }}"
+
+    - name: "이미지 디스크 5GB로 확장"
+      shell: "qemu-img resize {{ alloy_image_path }} 5G"
         remote_src: true
+
+    - name: "이미지 디스크 5GB로 확장"
+      shell: "qemu-img resize {{ alloy_image_path }} 5G"
         mode: "0644"
 
     - name: "Alloy config 생성 (VictoriaMetrics URL 적용)"
@@ -113,10 +128,13 @@
       shell: |
         export LIBGUESTFS_BACKEND=direct
         virt-customize -a {{ alloy_image_path }} \
+          --run-command 'growpart /dev/sda 1 || true' \
+          --run-command 'resize2fs /dev/sda1 || true' \
           --run /tmp/alloy-install.sh \
           --copy-in /tmp/alloy-vm-config.alloy:/etc/alloy/ \
           --run-command 'mv /etc/alloy/alloy-vm-config.alloy /etc/alloy/config.alloy' \
           --run-command 'systemctl enable alloy' \
+          --run-command 'mkdir -p /etc/systemd/system/alloy.service.d && echo -e [Service]\nUser=root\nGroup=root > /etc/systemd/system/alloy.service.d/override.conf' \
           --selinux-relabel
       register: customize_result
       timeout: 600

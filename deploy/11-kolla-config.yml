@@ -714,3 +714,19 @@
     - name: "multinode 확인"
       command: cat /root/multinode
       register: multinode_check
+
+    - name: "패스워드 생성 (kolla-genpwd)"
+      shell: source /root/kolla-venv/bin/activate && kolla-genpwd
+      args:
+        executable: /bin/bash
+        creates: /etc/kolla/.passwords_generated
+
+    - name: "패스워드 생성 완료 마커"
+      file:
+        path: /etc/kolla/.passwords_generated
+        state: touch
+
+    - name: "TLS 인증서 생성"
+      shell: source /root/kolla-venv/bin/activate && kolla-ansible certificates -i /root/multinode
+      args:
+        executable: /bin/bash

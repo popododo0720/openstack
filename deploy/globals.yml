@@ -937,9 +937,3 @@ skyline_console_extra_volumes:
   - "/opt/skyline-branding/cloud-logo-white.svg:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/asset/image/cloud-logo-white.svg:ro"
   - "/opt/skyline-branding/index.html:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/index.html:ro"
 
-grafana_extra_volumes:
-  - "/opt/grafana-provisioning/prometheus.yaml:/etc/grafana/provisioning/datasources/prometheus-custom.yaml:ro"
-  - "/opt/grafana-provisioning/mysql.yaml:/etc/grafana/provisioning/datasources/mysql.yaml:ro"
-  - "/opt/grafana-provisioning/victoriametrics.yaml:/etc/grafana/provisioning/datasources/victoriametrics.yaml:ro"
-  - "/opt/grafana-provisioning/dashboards.yaml:/etc/grafana/provisioning/dashboards/custom.yaml:ro"
-  - "/opt/grafana-dashboards:/var/lib/grafana/custom-dashboards:ro"

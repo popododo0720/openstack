@@ -47,7 +47,7 @@ for i in ${!HOSTS[@]}; do
     name=${NAMES[$i]}
     for dev in ${OSD_DEVICES[@]}; do
         echo "  → $name ($host) $dev 초기화"
-        ssh -o StrictHostKeyChecking=no root@$host "wipefs -af $dev; sgdisk --zap-all $dev; dd if=/dev/zero of=$dev bs=1M count=100 2>/dev/null; partprobe $dev; echo done"
+        ssh -o StrictHostKeyChecking=no root@$host "dmsetup remove_all 2>/dev/null; vgremove -f $(vgs --noheadings -o vg_name 2>/dev/null | grep ceph) 2>/dev/null; wipefs -af $dev; sgdisk --zap-all $dev; dd if=/dev/zero of=$dev bs=1M count=100 2>/dev/null; partprobe $dev; echo done"
         echo "    OK"
     done
 done

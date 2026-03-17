@@ -140,7 +140,7 @@
         executable: /bin/bash
 
 - name: "Skyline 브랜딩 파일 배포"
-  hosts: all_nodes
+  hosts: all
   become: yes
 
   vars:
