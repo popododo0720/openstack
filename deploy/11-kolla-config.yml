@@ -730,3 +730,9 @@
       shell: source /root/kolla-venv/bin/activate && kolla-ansible certificates -i /root/multinode
       args:
         executable: /bin/bash
+
+    - name: "admin 비밀번호 고정 (coremax1@#)"
+      lineinfile:
+        path: /etc/kolla/passwords.yml
+        regexp: '^keystone_admin_password:'
+        line: 'keystone_admin_password: coremax1@#'

@@ -345,3 +345,37 @@
           - HAProxy: 내부/외부 VIP 프록시
           - Prometheus: remote_write → VictoriaMetrics
           - Grafana: MariaDB + VictoriaMetrics datasource + 대시보드 5개
+
+##############################################
+# 5. Grafana anonymous access + HAProxy fix
+##############################################
+- name: "5. Grafana anonymous access + HAProxy healthcheck"
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: "Grafana anonymous access 패치"
+      blockinfile:
+        path: /etc/kolla/grafana/grafana.ini
+        marker: "# {mark} ANONYMOUS ACCESS"
+        block: |
+          [auth.anonymous]
+          enabled = true
+          org_name = Main Org.
+          org_role = Viewer
+
+          [security]
+          allow_embedding = true
+          cookie_samesite = none
+
+    - name: "HAProxy Grafana healthcheck 패치 (OPTIONS → GET /api/health)"
+      replace:
+        path: /etc/kolla/haproxy/services.d/grafana.cfg
+        regexp: 'option httpchk$'
+        replace: 'option httpchk GET /api/health'
+
+    - name: "Grafana 재시작"
+      shell: "docker restart grafana"
+
+    - name: "HAProxy 설정 검증 + reload"
+      shell: "docker exec haproxy haproxy -c -f /etc/haproxy/haproxy.cfg && docker kill -s HUP haproxy"

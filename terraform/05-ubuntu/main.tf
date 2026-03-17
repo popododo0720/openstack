@@ -42,6 +42,7 @@ resource "openstack_compute_instance_v2" "ubuntu" {
   name            = "ubuntu-vm-1"
   flavor_id       = openstack_compute_flavor_v2.ubuntu.id
   key_pair        = "test-keypair"
+  user_data = file("${path.module}/../scripts/alloy-bootstrap.sh")
   security_groups = [data.openstack_networking_secgroup_v2.test.name]
 
   block_device {

@@ -37,3 +37,43 @@ resource "openstack_compute_flavor_v2" "medium" {
 resource "openstack_compute_keypair_v2" "test" {
   name = "test-keypair"
 }
+
+# ===========================================
+# 클라우드 이미지
+# ===========================================
+resource "openstack_images_image_v2" "ubuntu" {
+  name             = "ubuntu-24.04"
+  image_source_url = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+  container_format = "bare"
+  disk_format      = "qcow2"
+  visibility       = "public"
+  properties = {
+    os_type    = "linux"
+    os_distro  = "ubuntu"
+    os_version = "24.04"
+  }
+}
+
+resource "openstack_images_image_v2" "rocky" {
+  name             = "rocky-9"
+  image_source_url = "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2"
+  container_format = "bare"
+  disk_format      = "qcow2"
+  visibility       = "public"
+  properties = {
+    os_type    = "linux"
+    os_distro  = "rocky"
+    os_version = "9"
+  }
+}
+
+# ===========================================
+# VM용 플레이버 (Alloy 포함)
+# ===========================================
+resource "openstack_compute_flavor_v2" "large" {
+  name      = "m1.large"
+  ram       = 2048
+  vcpus     = 2
+  disk      = 20
+  is_public = true
+}
