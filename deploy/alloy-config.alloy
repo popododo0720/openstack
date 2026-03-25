@@ -36,6 +36,6 @@ prometheus.relabel "add_labels" {
 
 prometheus.remote_write "default" {
   endpoint {
-    url = "http://127.0.0.1:19090/api/v1/write"
+    url = "http://vminsert.monitoring.local:8480/insert/0/prometheus/api/v1/write"
   }
 }

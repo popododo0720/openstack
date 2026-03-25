@@ -44,7 +44,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -98,7 +98,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -119,7 +119,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -200,7 +200,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -220,7 +220,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -274,7 +274,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -295,7 +295,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -349,7 +349,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -370,7 +370,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -424,7 +424,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -445,7 +445,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -526,7 +526,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -547,82 +547,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "decbytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 5,
-        "x": 14,
-        "y": 8
-      },
-      "id": 9,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "11.2.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "exemplar": false,
-          "expr": "node_filesystem_avail_bytes{job=\"alloy-vm\",vm_name=\"$VM\",mountpoint=\"/\"}",
-          "fullMetaSearch": false,
-          "includeNullMetadata": true,
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A",
-          "useBackend": false
-        }
-      ],
-      "title": "사용 가능한 디스크 크기",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -676,7 +601,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -697,7 +622,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -778,7 +703,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -794,7 +719,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -811,7 +736,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -832,7 +757,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -912,7 +837,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -933,7 +858,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -1013,7 +938,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -1033,7 +958,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -1066,7 +991,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "expr": "rate(node_network_receive_bytes_total{job=\"alloy-vm\",vm_name=\"$VM\",device!=\"lo\"}[5m])",
           "legendFormat": "{{device}} 수신",
@@ -1075,7 +1000,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "expr": "-rate(node_network_transmit_bytes_total{job=\"alloy-vm\",vm_name=\"$VM\",device!=\"lo\"}[5m])",
           "legendFormat": "{{device}} 송신",
@@ -1088,7 +1013,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -1117,7 +1042,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "expr": "rate(node_network_receive_errs_total{job=\"alloy-vm\",vm_name=\"$VM\",device!=\"lo\"}[5m])",
           "legendFormat": "{{device}} 수신에러",
@@ -1126,7 +1051,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "expr": "rate(node_network_transmit_errs_total{job=\"alloy-vm\",vm_name=\"$VM\",device!=\"lo\"}[5m])",
           "legendFormat": "{{device}} 송신에러",
@@ -1135,7 +1060,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "expr": "rate(node_network_receive_drop_total{job=\"alloy-vm\",vm_name=\"$VM\",device!=\"lo\"}[5m])",
           "legendFormat": "{{device}} 수신드롭",
@@ -1144,7 +1069,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "expr": "rate(node_network_transmit_drop_total{job=\"alloy-vm\",vm_name=\"$VM\",device!=\"lo\"}[5m])",
           "legendFormat": "{{device}} 송신드롭",
@@ -1157,113 +1082,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 0,
-        "y": 48
-      },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "time() - node_boot_time_seconds{job=\"alloy-vm\",vm_name=\"$VM\"}",
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "가동 시간",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 8,
-        "y": 48
-      },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "sum(namedprocess_namegroup_num_procs{job=\"alloy-vm\",vm_name=\"$VM\"})",
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "프로세스 수",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 16,
-        "y": 48
-      },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "node_netstat_Tcp_CurrEstab{job=\"alloy-vm\",vm_name=\"$VM\"}",
-          "legendFormat": "Established",
-          "refId": "A"
-        }
-      ],
-      "title": "TCP 연결 수",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
+        "uid": "victoriametrics"
       },
       "fieldConfig": {
         "defaults": {
@@ -1278,7 +1097,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 48
+        "y": 54
       },
       "options": {
         "legend": {
@@ -1292,7 +1111,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "expr": "node_load1{job=\"alloy-vm\",vm_name=\"$VM\"}",
           "legendFormat": "1분",
@@ -1301,7 +1120,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "expr": "node_load5{job=\"alloy-vm\",vm_name=\"$VM\"}",
           "legendFormat": "5분",
@@ -1310,7 +1129,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
+            "uid": "victoriametrics"
           },
           "expr": "node_load15{job=\"alloy-vm\",vm_name=\"$VM\"}",
           "legendFormat": "15분",
@@ -1319,6 +1138,43 @@
       ],
       "title": "시스템 부하 (Load Average)",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 5,
+        "x": 14,
+        "y": 8
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "time() - node_boot_time_seconds{job=\"alloy-vm\",vm_name=\"$VM\"}",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "가동 시간",
+      "type": "stat",
+      "id": 18
     }
   ],
   "refresh": "5s",
@@ -1334,21 +1190,15 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "${DS_VICTORIAMETRICS}"
+          "uid": "victoriametrics"
         },
-        "definition": "label_values(Instance_Metrics_CPU_Usage{instance=~\".*:8088\"}, instance)",
+        "definition": "label_values(node_uname_info, vm_name)",
         "hide": 0,
         "includeAll": false,
         "multi": false,
         "name": "VM",
-        "options": [
-          {
-            "selected": true,
-            "text": "ubuntu-vm-1",
-            "value": "ubuntu-vm-1"
-          }
-        ],
-        "query": "label_values(node_uname_info{job=\"alloy-vm\"}, vm_name)",
+        "options": [],
+        "query": "label_values(node_uname_info, vm_name)",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,

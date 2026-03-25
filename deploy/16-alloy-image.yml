@@ -1,12 +1,6 @@
 ---
-# 16-alloy-image.yml
-# Alloy가 미리 설치된 Ubuntu 이미지 생성 + Glance 등록
-# 사용법: ansible-playbook -i inventory.ini 16-alloy-image.yml
-#
-# 사전 요구: 216 서버에 libguestfs-tools 설치 필요
-#   apt-get install -y libguestfs-tools
 
-- name: "Alloy 내장 Ubuntu 이미지 생성 및 등록"
+- name: "Alloy 내장 Ubuntu 이미지 생성"
   hosts: localhost
   become: yes
 
@@ -14,10 +8,10 @@
     base_image_url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
     base_image_path: "/root/openstack/images/ubuntu-24.04-base.img"
     alloy_image_path: "/root/openstack/images/ubuntu-24.04-alloy.img"
-    alloy_config_src: "/root/openstack/deploy/alloy-config.alloy"
     image_dir: "/root/openstack/images"
-    # VictoriaMetrics vminsert VIP 주소
-    vminsert_url: "http://10.0.2.10:8480/api/v1/write"
+    vminsert_fqdn: "vminsert.monitoring.local"
+    vminsert_ip: "192.168.0.60"
+    vminsert_url: "http://{{ vminsert_fqdn }}:8480/insert/0/prometheus/api/v1/write"
 
   tasks:
     - name: "이미지 디렉토리 생성"
@@ -30,43 +24,31 @@
       apt:
         name: libguestfs-tools
         state: present
+        update_cache: yes
 
     - name: "Ubuntu 베이스 이미지 다운로드"
       get_url:
         url: "{{ base_image_url }}"
         dest: "{{ base_image_path }}"
         mode: "0644"
-      register: download_result
+        force: false
 
     - name: "베이스 이미지 복사 (원본 보존)"
-
-    - name: "이미지 디스크 5GB로 확장"
-      shell: "qemu-img resize {{ alloy_image_path }} 5G"
       copy:
-
-    - name: "이미지 디스크 5GB로 확장"
-      shell: "qemu-img resize {{ alloy_image_path }} 5G"
         src: "{{ base_image_path }}"
-
-    - name: "이미지 디스크 5GB로 확장"
-      shell: "qemu-img resize {{ alloy_image_path }} 5G"
         dest: "{{ alloy_image_path }}"
-
-    - name: "이미지 디스크 5GB로 확장"
-      shell: "qemu-img resize {{ alloy_image_path }} 5G"
         remote_src: true
-
-    - name: "이미지 디스크 5GB로 확장"
-      shell: "qemu-img resize {{ alloy_image_path }} 5G"
         mode: "0644"
 
-    - name: "Alloy config 생성 (VictoriaMetrics URL 적용)"
+    - name: "이미지 디스크 5GB로 확장"
+      command: "qemu-img resize {{ alloy_image_path }} 5G"
+
+    - name: "Alloy config 생성"
       copy:
         dest: /tmp/alloy-vm-config.alloy
         mode: "0644"
         content: |
-          // Grafana Alloy - VM Monitoring (auto-provisioned)
-
+          // Grafana Alloy - VM Monitoring
           prometheus.exporter.unix "default" {
             enable_collectors = ["cpu", "diskstats", "filesystem", "loadavg", "meminfo", "netdev", "netstat", "os", "uname", "vmstat", "time"]
           }
@@ -114,9 +96,8 @@
         content: |
           #!/bin/bash
           set -e
-          # Grafana APT repo 추가
           apt-get update -qq
-          apt-get install -y -qq gpg
+          apt-get install -y -qq gpg wget
           mkdir -p /etc/apt/keyrings/
           wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor > /etc/apt/keyrings/grafana.gpg
           echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" > /etc/apt/sources.list.d/grafana.list
@@ -124,7 +105,7 @@
           apt-get install -y -qq alloy
           systemctl enable alloy
 
-    - name: "이미지에 Alloy 베이킹 (virt-customize)"
+    - name: "이미지에 Alloy 베이킹"
       shell: |
         export LIBGUESTFS_BACKEND=direct
         virt-customize -a {{ alloy_image_path }} \
@@ -133,14 +114,17 @@
           --run /tmp/alloy-install.sh \
           --copy-in /tmp/alloy-vm-config.alloy:/etc/alloy/ \
           --run-command 'mv /etc/alloy/alloy-vm-config.alloy /etc/alloy/config.alloy' \
+          --run-command 'grep -q "{{ vminsert_fqdn }}" /etc/hosts || echo "{{ vminsert_ip }} {{ vminsert_fqdn }}" >> /etc/hosts' \
+          --run-command 'mkdir -p /etc/systemd/system/alloy.service.d' \
+          --run-command 'printf "[Service]\\nUser=root\\nGroup=root\\n" > /etc/systemd/system/alloy.service.d/override.conf' \
           --run-command 'systemctl enable alloy' \
-          --run-command 'mkdir -p /etc/systemd/system/alloy.service.d && echo -e [Service]\nUser=root\nGroup=root > /etc/systemd/system/alloy.service.d/override.conf' \
           --selinux-relabel
-      register: customize_result
-      timeout: 600
+      args:
+        executable: /bin/bash
+      timeout: 1800
 
     - name: "이미지 크기 확인"
-      shell: "ls -lh {{ alloy_image_path }}"
+      command: "ls -lh {{ alloy_image_path }}"
       register: image_size
       changed_when: false
 
@@ -150,6 +134,6 @@
           - "Alloy 내장 이미지 생성 완료: {{ alloy_image_path }}"
           - "{{ image_size.stdout }}"
           - ""
-          - "Glance 등록은 Terraform 또는 수동으로:"
+          - "다음 단계(스택1에서 실행):"
           - "  source /root/kolla-venv/bin/activate && source /etc/kolla/admin-openrc.sh"
           - "  openstack image create 'ubuntu-24.04-alloy' --file {{ alloy_image_path }} --disk-format qcow2 --container-format bare --public"

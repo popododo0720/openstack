@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
-VMINSERT_URL="http://192.168.0.60:8480/insert/0/prometheus/api/v1/write"
+VMINSERT_FQDN="vminsert.monitoring.local"
+VMINSERT_IP="192.168.0.60"
+VMINSERT_URL="http://${VMINSERT_FQDN}:8480/insert/0/prometheus/api/v1/write"
 
 if [ -f /etc/debian_version ]; then
     export DEBIAN_FRONTEND=noninteractive
@@ -20,6 +22,10 @@ gpgkey=https://rpm.grafana.com/gpg.key
 sslverify=1
 REPO
     dnf install -y alloy || yum install -y alloy
+fi
+
+if ! grep -Eq "^[[:space:]]*${VMINSERT_IP}[[:space:]]+${VMINSERT_FQDN}([[:space:]]|$)" /etc/hosts; then
+    echo "${VMINSERT_IP} ${VMINSERT_FQDN}" >> /etc/hosts
 fi
 
 mkdir -p /etc/alloy
@@ -53,10 +59,12 @@ prometheus.scrape "process" {
 
 prometheus.relabel "add_labels" {
   forward_to = [prometheus.remote_write.default.receiver]
+
   rule {
     target_label = "vm_name"
     replacement  = env("HOSTNAME")
   }
+
   rule {
     target_label = "job"
     replacement  = "alloy-vm"

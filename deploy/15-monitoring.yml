@@ -156,7 +156,7 @@
         marker: "# {mark} VICTORIAMETRICS REMOTE_WRITE"
         block: |
           remote_write:
-            - url: "http://10.0.2.10:8480/insert/0/prometheus/api/v1/write"
+            - url: "http://{{ kolla_internal_fqdn | default(kolla_internal_vip_address) }}:8480/insert/0/prometheus/api/v1/write"
 
     - name: "Prometheus 재시작"
       shell: "docker restart prometheus_server"
@@ -169,7 +169,7 @@
   become: yes
 
   vars:
-    grafana_url: "https://10.0.2.10:3000"
+    grafana_url: "https://{{ kolla_internal_fqdn | default(kolla_internal_vip_address) }}:3000"
     dashboard_dir: "/root/openstack/deploy/grafana-dashboards"
 
   tasks:
@@ -235,7 +235,7 @@
           name: VictoriaMetrics
           type: prometheus
           uid: victoriametrics
-          url: "http://10.0.2.10:8481/select/0/prometheus"
+          url: "http://{{ kolla_internal_fqdn | default(kolla_internal_vip_address) }}:8481/select/0/prometheus"
           access: proxy
           isDefault: false
           editable: true
@@ -267,7 +267,7 @@
           name: MariaDB
           type: mysql
           uid: mysql
-          url: "10.0.2.10:3306"
+          url: "{{ kolla_internal_fqdn | default(kolla_internal_vip_address) }}:3306"
           database: nova
           user: grafana
           secureJsonData:
