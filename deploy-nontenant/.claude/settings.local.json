@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh:*)",
+      "Bash(ping:*)",
+      "Bash(ip addr:*)",
+      "Bash(grep:*)",
+      "Bash(command -v:*)",
+      "Bash(virsh list:*)",
+      "Bash(virsh dumpxml:*)",
+      "Bash(chmod:*)",
+      "Bash(for node in 192.168.0.61 192.168.0.62 192.168.0.63)",
+      "Bash(do)",
+      "Bash(echo:*)",
+      "Bash(done)",
+      "Bash(for ip in 61 62 63)",
+      "Bash(do ssh -o ConnectTimeout=5 root@192.168.0.$ip \"hostname; ip -br addr show br-ex\")",
+      "Bash(ls:*)",
+      "WebSearch",
+      "Bash(for ip in 62 63; do echo \"=== 192.168.0.$ip ===\" && ssh root@192.168.0.$ip \"systemctl daemon-reload && systemctl restart ceph-53d0a38b-1117-11f1-873a-52540064d271.target && systemctl list-units 'ceph*' --no-pager | grep running\" 2>&1; done)"
+    ]
+  }
+}

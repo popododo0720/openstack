@@ -1,0 +1,44 @@
+---
+# 14-after-deploy.yml
+# kolla-ansible deploy/post-deploy 이후 수동 설정
+# 사용법: ansible-playbook -i inventory.ini 14-after-deploy.yml
+
+- name: "Post-deploy: Quota 무제한 설정"
+  hosts: stack1
+  become: yes
+
+  vars:
+    os_auth_url: "https://{{ kolla_internal_vip_address }}:5000"
+    os_cacert: "/etc/ssl/certs/ca-certificates.crt"
+    admin_openrc: "/etc/kolla/admin-openrc.sh"
+
+  tasks:
+    - name: "admin 비밀번호 추출"
+      shell: "grep OS_PASSWORD {{ admin_openrc }} | sed \"s/.*='\\(.*\\)'/\\1/\""
+      register: admin_pw
+      changed_when: false
+
+    - name: "Nova quota 무제한 설정"
+      shell: |
+        docker exec kolla_toolbox openstack           --os-auth-url {{ os_auth_url }}           --os-username admin           --os-password '{{ admin_pw.stdout }}'           --os-project-name admin           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           quota set --instances -1 --cores -1 --ram -1             --key-pairs -1 --server-groups -1 --server-group-members -1             admin
+      changed_when: false
+
+    - name: "Cinder quota 무제한 설정"
+      shell: |
+        docker exec kolla_toolbox openstack           --os-auth-url {{ os_auth_url }}           --os-username admin           --os-password '{{ admin_pw.stdout }}'           --os-project-name admin           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           quota set --volumes -1 --snapshots -1 --gigabytes -1             --backups -1 --backup-gigabytes -1 --per-volume-gigabytes -1             admin
+      changed_when: false
+
+    - name: "Neutron quota 무제한 설정"
+      shell: |
+        docker exec kolla_toolbox openstack           --os-auth-url {{ os_auth_url }}           --os-username admin           --os-password '{{ admin_pw.stdout }}'           --os-project-name admin           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           quota set --floating-ips -1 --secgroup-rules -1 --secgroups -1             --networks -1 --subnets -1 --ports -1 --routers -1             admin
+      changed_when: false
+
+    - name: "Quota 확인"
+      shell: |
+        docker exec kolla_toolbox openstack           --os-auth-url {{ os_auth_url }}           --os-username admin           --os-password '{{ admin_pw.stdout }}'           --os-project-name admin           --os-user-domain-name Default           --os-project-domain-name Default           --os-identity-api-version 3           --os-cacert {{ os_cacert }}           --os-interface internal           quota show
+      register: quota_check
+      changed_when: false
+
+    - name: "Quota 결과"
+      debug:
+        msg: "{{ quota_check.stdout_lines }}"

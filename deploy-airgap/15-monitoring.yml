@@ -1,0 +1,381 @@
+---
+# 15-monitoring.yml
+# 모니터링 전체 자동화 (VictoriaMetrics + HAProxy + Prometheus + Grafana)
+# 재배포/reconfigure 후 216에서 실행:
+#   ansible-playbook -i inventory.ini 15-monitoring.yml
+
+##############################################
+# 1. VictoriaMetrics 클러스터 배포
+##############################################
+- name: "1. VictoriaMetrics 클러스터 배포"
+  hosts: all
+  become: yes
+  vars:
+    vm_version: "1.115.0"
+    vm_retention: "365d"
+
+  tasks:
+    - name: "데이터 디렉토리 생성"
+      file:
+        path: /data/victoriametrics
+        state: directory
+        mode: "0755"
+
+    - name: "기존 컨테이너 정리"
+      shell: "docker stop vmstorage vminsert vmselect 2>/dev/null; docker rm vmstorage vminsert vmselect 2>/dev/null; true"
+      changed_when: false
+
+    - name: "vmstorage 배포"
+      shell: |
+        docker run -d --name vmstorage --restart=always --network=host \
+          -v /data/victoriametrics:/storage \
+          victoriametrics/vmstorage:v{{ vm_version }}-cluster \
+          -storageDataPath=/storage \
+          -retentionPeriod={{ vm_retention }} \
+          -vminsertAddr={{ internal_ip }}:8400 \
+          -vmselectAddr={{ internal_ip }}:8401 \
+          -dedup.minScrapeInterval=60s
+
+    - name: "vminsert 배포"
+      shell: |
+        docker run -d --name vminsert --restart=always --network=host \
+          victoriametrics/vminsert:v{{ vm_version }}-cluster \
+          -httpListenAddr={{ internal_ip }}:8480 \
+          -replicationFactor=2 \
+          {% for host in groups['all'] %}
+          -storageNode={{ hostvars[host]['internal_ip'] }}:8400 \
+          {% endfor %}
+
+    - name: "vmselect 배포"
+      shell: |
+        docker run -d --name vmselect --restart=always --network=host \
+          victoriametrics/vmselect:v{{ vm_version }}-cluster \
+          -httpListenAddr={{ internal_ip }}:8481 \
+          -dedup.minScrapeInterval=60s \
+          {% for host in groups['all'] %}
+          -storageNode={{ hostvars[host]['internal_ip'] }}:8401 \
+          {% endfor %}
+
+    - name: "VictoriaMetrics 상태 확인"
+      shell: "docker ps --format '{%raw%}{{.Names}} {{.Status}}{%endraw%}' | grep -E 'vm(storage|insert|select)'"
+      register: vm_status
+      changed_when: false
+    - debug: msg="{{ vm_status.stdout_lines }}"
+
+##############################################
+# 2. HAProxy VictoriaMetrics 프록시
+##############################################
+- name: "2. HAProxy VictoriaMetrics 프록시 설정"
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: "HAProxy VictoriaMetrics config 생성"
+      copy:
+        dest: /etc/kolla/haproxy/services.d/victoriametrics.cfg
+        mode: "0644"
+        content: |
+          # VictoriaMetrics vminsert (write) - internal
+          frontend victoriametrics_insert_front
+              mode http
+              option httplog
+              bind 10.0.2.10:8480
+              default_backend victoriametrics_insert_back
+
+          # VictoriaMetrics vminsert (write) - external (for VMs)
+          frontend victoriametrics_insert_external_front
+              mode http
+              option httplog
+              bind 192.168.0.60:8480
+              default_backend victoriametrics_insert_back
+
+          backend victoriametrics_insert_back
+              mode http
+              option httpchk GET /health
+              {% for host in groups['all'] %}
+              server {{ host }} {{ hostvars[host]['internal_ip'] }}:8480 check inter 5000 rise 2 fall 3
+              {% endfor %}
+
+          # VictoriaMetrics vmselect (read) - internal
+          frontend victoriametrics_select_front
+              mode http
+              option httplog
+              bind 10.0.2.10:8481
+              default_backend victoriametrics_select_back
+
+          # VictoriaMetrics vmselect (read) - external
+          frontend victoriametrics_select_external_front
+              mode http
+              option httplog
+              bind 192.168.0.60:8481
+              default_backend victoriametrics_select_back
+
+          backend victoriametrics_select_back
+              mode http
+              option httpchk GET /health
+              {% for host in groups['all'] %}
+              server {{ host }} {{ hostvars[host]['internal_ip'] }}:8481 check inter 5000 rise 2 fall 3
+              {% endfor %}
+
+    - name: "HAProxy 설정 검증"
+      shell: "docker exec haproxy haproxy -c -f /etc/haproxy/haproxy.cfg"
+      changed_when: false
+
+    - name: "HAProxy 재시작"
+      shell: "docker restart haproxy"
+
+    - name: "VIP 접근 확인"
+      shell: "sleep 3 && curl -sf http://10.0.2.10:8480/health && curl -sf http://10.0.2.10:8481/health"
+      retries: 3
+      delay: 5
+      run_once: true
+
+##############################################
+# 3. Prometheus remote_write 패치
+##############################################
+- name: "3. Prometheus remote_write 설정"
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: "기존 remote_write 제거"
+      lineinfile:
+        path: /etc/kolla/prometheus-server/prometheus.yml
+        regexp: "^remote_write:"
+        state: absent
+
+    - name: "remote_write URL 라인 제거"
+      lineinfile:
+        path: /etc/kolla/prometheus-server/prometheus.yml
+        regexp: ".*8480.*insert.*"
+        state: absent
+
+    - name: "remote_write 추가"
+      blockinfile:
+        path: /etc/kolla/prometheus-server/prometheus.yml
+        marker: "# {mark} VICTORIAMETRICS REMOTE_WRITE"
+        block: |
+          remote_write:
+            - url: "http://{{ kolla_internal_fqdn | default(kolla_internal_vip_address) }}:8480/insert/0/prometheus/api/v1/write"
+
+    - name: "Prometheus 재시작"
+      shell: "docker restart prometheus_server"
+
+##############################################
+# 4. Grafana MariaDB 유저 + Datasources + 대시보드
+##############################################
+- name: "4. Grafana 설정 (datasources + dashboards)"
+  hosts: stack1
+  become: yes
+
+  vars:
+    grafana_url: "https://{{ kolla_internal_fqdn | default(kolla_internal_vip_address) }}:3000"
+    dashboard_dir: "/root/openstack/deploy-airgap/grafana-dashboards"
+
+  tasks:
+    # --- MariaDB grafana 유저 권한 ---
+    - name: "passwords.yml 읽기"
+      slurp:
+        src: /etc/kolla/passwords.yml
+      register: pw_raw
+
+    - name: "비밀번호 파싱"
+      set_fact:
+        grafana_admin_pw: "{{ (pw_raw.content | b64decode | from_yaml).grafana_admin_password }}"
+        grafana_db_pw: "{{ (pw_raw.content | b64decode | from_yaml).grafana_database_password }}"
+        db_root_pw: "{{ (pw_raw.content | b64decode | from_yaml).database_password }}"
+
+    - name: "Grafana MariaDB 유저 SELECT 권한 부여"
+      shell: |
+        docker exec mariadb mysql -u root -p{{ db_root_pw }} -e "
+        ALTER USER IF EXISTS 'grafana'@'%' IDENTIFIED BY '{{ grafana_db_pw }}';
+        GRANT SELECT ON nova.* TO 'grafana'@'%';
+        GRANT SELECT ON neutron.* TO 'grafana'@'%';
+        GRANT SELECT ON cinder.* TO 'grafana'@'%';
+        GRANT SELECT ON keystone.* TO 'grafana'@'%';
+        GRANT SELECT ON glance.* TO 'grafana'@'%';
+        GRANT SELECT ON heat.* TO 'grafana'@'%';
+        GRANT SELECT ON masakari.* TO 'grafana'@'%';
+        FLUSH PRIVILEGES;"
+
+    # --- Grafana 준비 대기 ---
+    - name: "Grafana API 대기"
+      uri:
+        url: "{{ grafana_url }}/api/health"
+        user: admin
+        password: "{{ grafana_admin_pw }}"
+        validate_certs: false
+        force_basic_auth: true
+      register: grafana_health
+      retries: 10
+      delay: 10
+      until: grafana_health.status == 200
+
+    # --- VictoriaMetrics Datasource ---
+    - name: "VictoriaMetrics datasource 존재 확인"
+      uri:
+        url: "{{ grafana_url }}/api/datasources/uid/victoriametrics"
+        user: admin
+        password: "{{ grafana_admin_pw }}"
+        validate_certs: false
+        force_basic_auth: true
+        status_code: [200, 404]
+      register: vm_ds
+
+    - name: "VictoriaMetrics datasource 생성"
+      uri:
+        url: "{{ grafana_url }}/api/datasources"
+        method: POST
+        user: admin
+        password: "{{ grafana_admin_pw }}"
+        validate_certs: false
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: VictoriaMetrics
+          type: prometheus
+          uid: victoriametrics
+          url: "http://{{ kolla_internal_fqdn | default(kolla_internal_vip_address) }}:8481/select/0/prometheus"
+          access: proxy
+          isDefault: false
+          editable: true
+          jsonData:
+            timeInterval: 60s
+      when: vm_ds.status == 404
+
+    # --- MariaDB Datasource ---
+    - name: "MariaDB datasource 존재 확인"
+      uri:
+        url: "{{ grafana_url }}/api/datasources/uid/mysql"
+        user: admin
+        password: "{{ grafana_admin_pw }}"
+        validate_certs: false
+        force_basic_auth: true
+        status_code: [200, 404]
+      register: mysql_ds
+
+    - name: "MariaDB datasource 생성"
+      uri:
+        url: "{{ grafana_url }}/api/datasources"
+        method: POST
+        user: admin
+        password: "{{ grafana_admin_pw }}"
+        validate_certs: false
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: MariaDB
+          type: mysql
+          uid: mysql
+          url: "{{ kolla_internal_fqdn | default(kolla_internal_vip_address) }}:3306"
+          database: nova
+          user: grafana
+          secureJsonData:
+            password: "{{ grafana_db_pw }}"
+          access: proxy
+          isDefault: false
+          editable: true
+      when: mysql_ds.status == 404
+
+    # --- Prometheus datasource UID 조회 ---
+    - name: "Prometheus datasource UID 조회"
+      shell: |
+        curl -sk {{ grafana_url }}/api/datasources -u admin:{{ grafana_admin_pw }} | \
+        python3 -c "import sys,json; ds=json.load(sys.stdin); [print(d['uid']) for d in ds if d['type']=='prometheus' and d['name']=='Prometheus']"
+      register: prom_uid_result
+      changed_when: false
+
+    - name: "UID 저장"
+      set_fact:
+        prom_uid: "{{ prom_uid_result.stdout | trim }}"
+
+    # --- 대시보드 Import ---
+    - name: "대시보드 치환 및 Import"
+      shell: |
+        python3 << 'PYEOF'
+        import json, glob, subprocess
+        prom_uid = "{{ prom_uid }}"
+        grafana_pw = "{{ grafana_admin_pw }}"
+        
+        for f in sorted(glob.glob("{{ dashboard_dir }}/*.json")):
+            with open(f) as fh:
+                raw = fh.read()
+            raw = raw.replace("${DS_PROMETHEUS}", prom_uid)
+            raw = raw.replace("${DS_MYSQL}", "mysql")
+            raw = raw.replace("${DS_VICTORIAMETRICS}", "victoriametrics")
+            d = json.loads(raw)
+            d.pop("__inputs", None)
+            d.pop("__requires", None)
+            if "id" in d: d["id"] = None
+            payload = {"dashboard": d, "overwrite": True, "folderId": 0}
+            out = f"/tmp/import-{f.split('/')[-1]}"
+            with open(out, "w") as fh:
+                json.dump(payload, fh)
+            result = subprocess.run([
+                "curl", "-sk", "-X", "POST",
+                "{{ grafana_url }}/api/dashboards/db",
+                "-u", f"admin:{grafana_pw}",
+                "-H", "Content-Type: application/json",
+                "--data-binary", f"@{out}"
+            ], capture_output=True, text=True)
+            status = json.loads(result.stdout).get("status", "error")
+            print(f"{f.split('/')[-1]}: {status}")
+        PYEOF
+      args:
+        executable: /bin/bash
+
+    # --- Grafana 홈 설정 ---
+    - name: "Grafana 홈을 대시보드 목록으로 설정"
+      uri:
+        url: "{{ grafana_url }}/api/org/preferences"
+        method: PUT
+        user: admin
+        password: "{{ grafana_admin_pw }}"
+        validate_certs: false
+        force_basic_auth: true
+        body_format: json
+        body:
+          homeDashboardUID: ""
+
+    - name: "완료"
+      debug:
+        msg: |
+          모니터링 설정 완료!
+          - VictoriaMetrics 클러스터: 3대 (365일 retention)
+          - HAProxy: 내부/외부 VIP 프록시
+          - Prometheus: remote_write → VictoriaMetrics
+          - Grafana: MariaDB + VictoriaMetrics datasource + 대시보드 5개
+
+##############################################
+# 5. Grafana anonymous access + HAProxy fix
+##############################################
+- name: "5. Grafana anonymous access + HAProxy healthcheck"
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: "Grafana anonymous access 패치"
+      blockinfile:
+        path: /etc/kolla/grafana/grafana.ini
+        marker: "# {mark} ANONYMOUS ACCESS"
+        block: |
+          [auth.anonymous]
+          enabled = true
+          org_name = Main Org.
+          org_role = Viewer
+
+          [security]
+          allow_embedding = true
+          cookie_samesite = none
+
+    - name: "HAProxy Grafana healthcheck 패치 (OPTIONS → GET /api/health)"
+      replace:
+        path: /etc/kolla/haproxy/services.d/grafana.cfg
+        regexp: 'option httpchk$'
+        replace: 'option httpchk GET /api/health'
+
+    - name: "Grafana 재시작"
+      shell: "docker restart grafana"
+
+    - name: "HAProxy 설정 검증 + reload"
+      shell: "docker exec haproxy haproxy -c -f /etc/haproxy/haproxy.cfg && docker kill -s HUP haproxy"

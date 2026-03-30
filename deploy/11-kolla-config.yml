@@ -179,7 +179,8 @@
           control
 
           [hacluster-remote:children]
-          compute
+          # all-in-one 3노드(control+compute 겸용)에서는 remote node를 두지 않음
+          # compute-only 노드가 생기기 전까지 비워둔다
 
           [loadbalancer:children]
           network

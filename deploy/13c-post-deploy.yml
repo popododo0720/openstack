@@ -55,20 +55,18 @@
       debug:
         msg: "{{ osc_version.stdout }}"
 
-    - name: "admin-openrc.sh 복사"
-      copy:
+    - name: "stack1의 admin-openrc.sh 읽기"
+      slurp:
         src: /etc/kolla/admin-openrc.sh
-        dest: /etc/kolla/admin-openrc.sh
-        mode: '0600'
       delegate_to: stack1
       run_once: true
+      register: admin_openrc_raw
 
-    - name: "admin-openrc.sh 배포 (stack2, stack3)"
+    - name: "admin-openrc.sh 배포 (3대)"
       copy:
-        src: /etc/kolla/admin-openrc.sh
+        content: "{{ admin_openrc_raw.content | b64decode }}"
         dest: /etc/kolla/admin-openrc.sh
         mode: '0600'
-      when: inventory_hostname != 'stack1'
 
     - name: "activate-openstack 스크립트 생성"
       copy:
@@ -105,11 +103,17 @@
 
     - name: "Ceph mgr exporter endpoint 확인"
       uri:
-        url: "http://{{ hostvars[item]['storage_ip'] }}:9283/metrics"
+        url: "http://127.0.0.1:9283/metrics"
         method: GET
         status_code: 200
         return_content: false
+        timeout: 5
+      delegate_to: "{{ item }}"
       loop: "{{ groups['all'] }}"
+      register: ceph_prometheus_check
+      retries: 20
+      delay: 3
+      until: ceph_prometheus_check.status == 200
 
 - name: "Post-deploy 검증: Galera Primary 상태 확인"
   hosts: stack1

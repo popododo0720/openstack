@@ -1,0 +1,37 @@
+---
+- name: "기본 패키지 설치"
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: "apt 캐시 업데이트"
+      apt:
+        update_cache: yes
+
+    - name: "기본 패키지 설치"
+      apt:
+        name:
+          - chrony
+          - net-tools
+          - curl
+          - wget
+          - python3-full
+          - python3-pip
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - isc-dhcp-client
+          - apt-transport-https
+        state: present
+
+    - name: "로케일 생성 (ko_KR, en_US)"
+      shell: locale-gen ko_KR.UTF-8 en_US.UTF-8
+      changed_when: false
+
+    - name: "기본 로케일 설정"
+      copy:
+        content: |
+          LANG=en_US.UTF-8
+          LC_ALL=en_US.UTF-8
+        dest: /etc/default/locale
+        mode: '0644'

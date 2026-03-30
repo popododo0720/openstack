@@ -1,0 +1,178 @@
+---
+- name: "Kolla 사후 설정 (post-deploy)"
+  hosts: stack1
+  become: yes
+  vars:
+    venv_path: "/root/kolla-venv"
+    multinode_path: "/root/multinode"
+
+  tasks:
+    - name: "kolla-ansible post-deploy 실행"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        kolla-ansible post-deploy -i {{ multinode_path }}
+      args:
+        executable: /bin/bash
+      register: postdeploy_result
+
+    - name: "post-deploy 결과"
+      debug:
+        msg: "{{ postdeploy_result.stdout_lines[-10:] }}"
+
+- name: "OpenStack CLI 설치 (3대)"
+  hosts: stack1,stack2,stack3
+  become: yes
+  vars:
+    venv_path: "/root/kolla-venv"
+
+  tasks:
+    - name: "kolla venv 존재 확인"
+      stat:
+        path: "{{ venv_path }}/bin/activate"
+      register: venv_check
+
+    - name: "kolla venv 생성 (없는 경우)"
+      command: python3 -m venv {{ venv_path }}
+      when: not venv_check.stat.exists
+
+    - name: "openstackclient 설치"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        pip install python-openstackclient --index-url {{ airgap_pypi_simple_url }} --trusted-host {{ artifact_host }}
+      args:
+        executable: /bin/bash
+      register: osc_install
+
+    - name: "설치 확인"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        openstack --version
+      args:
+        executable: /bin/bash
+      register: osc_version
+
+    - name: "버전 출력"
+      debug:
+        msg: "{{ osc_version.stdout }}"
+
+    - name: "admin-openrc.sh 복사"
+      copy:
+        src: /etc/kolla/admin-openrc.sh
+        dest: /etc/kolla/admin-openrc.sh
+        mode: '0600'
+      delegate_to: stack1
+      run_once: true
+
+    - name: "admin-openrc.sh 배포 (stack2, stack3)"
+      copy:
+        src: /etc/kolla/admin-openrc.sh
+        dest: /etc/kolla/admin-openrc.sh
+        mode: '0600'
+      when: inventory_hostname != 'stack1'
+
+    - name: "activate-openstack 스크립트 생성"
+      copy:
+        dest: /root/activate-openstack
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          source /root/kolla-venv/bin/activate
+          source /etc/kolla/admin-openrc.sh
+          echo "OpenStack CLI 활성화됨"
+
+    - name: "완료 메시지"
+      debug:
+        msg:
+          - "OpenStack CLI 설치 완료!"
+          - "사용법: source /root/activate-openstack"
+
+
+- name: "Post-deploy 보정: Ceph Prometheus Exporter 보장"
+  hosts: stack1
+  become: yes
+
+  tasks:
+    - name: "Ceph mgr prometheus 모듈 활성화"
+      shell: ceph mgr module enable prometheus
+      register: ceph_prom_module
+      changed_when: "'already enabled' not in (ceph_prom_module.stdout + ceph_prom_module.stderr) | lower"
+
+    - name: "Ceph prometheus listener 주소 설정"
+      shell: ceph config set mgr mgr/prometheus/server_addr 0.0.0.0
+
+    - name: "Ceph prometheus listener 포트 설정"
+      shell: ceph config set mgr mgr/prometheus/server_port 9283
+
+    - name: "Ceph mgr exporter endpoint 확인"
+      uri:
+        url: "http://{{ hostvars[item]['storage_ip'] }}:9283/metrics"
+        method: GET
+        status_code: 200
+        return_content: false
+      loop: "{{ groups['all'] }}"
+
+- name: "Post-deploy 검증: Galera Primary 상태 확인"
+  hosts: stack1
+  become: yes
+
+  tasks:
+    - name: "DB 루트 비밀번호 로드"
+      slurp:
+        src: /etc/kolla/passwords.yml
+      register: kolla_pw_raw
+
+    - name: "DB 루트 비밀번호 파싱"
+      set_fact:
+        db_root_pw: >-
+          {{
+            ((kolla_pw_raw.content | b64decode | from_yaml).mariadb_root_password
+             | default((kolla_pw_raw.content | b64decode | from_yaml).database_password
+             | default('')))
+          }}
+
+    - name: "Galera wsrep_cluster_status 확인"
+      shell: >-
+        docker exec mariadb mysql --no-defaults --protocol=socket --socket=/run/mysqld/mysqld.sock
+        -uroot -p'{{ db_root_pw }}' -Nse "SHOW STATUS LIKE 'wsrep_cluster_status';"
+      register: wsrep_cluster_status
+      changed_when: false
+
+    - name: "Galera wsrep_ready 확인"
+      shell: >-
+        docker exec mariadb mysql --no-defaults --protocol=socket --socket=/run/mysqld/mysqld.sock
+        -uroot -p'{{ db_root_pw }}' -Nse "SHOW STATUS LIKE 'wsrep_ready';"
+      register: wsrep_ready
+      changed_when: false
+
+    - name: "Galera wsrep_local_state_comment 확인"
+      shell: >-
+        docker exec mariadb mysql --no-defaults --protocol=socket --socket=/run/mysqld/mysqld.sock
+        -uroot -p'{{ db_root_pw }}' -Nse "SHOW STATUS LIKE 'wsrep_local_state_comment';"
+      register: wsrep_state_comment
+      changed_when: false
+
+    - name: "Galera wsrep_cluster_size 확인"
+      shell: >-
+        docker exec mariadb mysql --no-defaults --protocol=socket --socket=/run/mysqld/mysqld.sock
+        -uroot -p'{{ db_root_pw }}' -Nse "SHOW STATUS LIKE 'wsrep_cluster_size';"
+      register: wsrep_cluster_size
+      changed_when: false
+
+    - name: "Galera Primary/Synced 게이트"
+      assert:
+        that:
+          - "'Primary' in wsrep_cluster_status.stdout"
+          - "'ON' in wsrep_ready.stdout"
+          - "'Synced' in wsrep_state_comment.stdout"
+          - "'3' in wsrep_cluster_size.stdout"
+        fail_msg: >-
+          Galera 상태 비정상: {{ wsrep_cluster_status.stdout }} / {{ wsrep_ready.stdout }} /
+          {{ wsrep_state_comment.stdout }} / {{ wsrep_cluster_size.stdout }}
+
+    - name: "Galera 상태 출력"
+      debug:
+        msg:
+          - "{{ wsrep_cluster_status.stdout }}"
+          - "{{ wsrep_ready.stdout }}"
+          - "{{ wsrep_state_comment.stdout }}"
+          - "{{ wsrep_cluster_size.stdout }}"
