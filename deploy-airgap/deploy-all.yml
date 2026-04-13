@@ -31,6 +31,3 @@
 # Phase 5: 후속 설정 (amphora, trove, mgmt-net)
 - import_playbook: 14-after-deploy.yml
 
-# Phase 6: 모니터링/Alloy 이미지
-- import_playbook: 15-monitoring.yml
-- import_playbook: 16-alloy-image.yml

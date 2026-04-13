@@ -15,26 +15,15 @@
         purge: yes
       ignore_errors: yes
 
-    - name: "Docker GPG 키 디렉토리 생성"
-      file:
-        path: /etc/apt/keyrings
-        state: directory
-        mode: '0755'
-
-    - name: "Docker 공식 GPG 키 다운로드"
-      shell: curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc && chmod 644 /etc/apt/keyrings/docker.asc
-      args:
-        creates: /etc/apt/keyrings/docker.asc
-
     - name: "Docker 공식 APT 레포 추가"
       copy:
         dest: /etc/apt/sources.list.d/docker.sources
         content: |
           Types: deb
-          URIs: https://download.docker.com/linux/ubuntu
-          Suites: {{ ansible_distribution_release }}
+          URIs: https://10.250.254.1/aptly
+          Suites: docker-noble
           Components: stable
-          Signed-By: /etc/apt/keyrings/docker.asc
+          Trusted: yes
         mode: '0644'
 
     - name: "apt 캐시 업데이트"

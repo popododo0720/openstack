@@ -1,0 +1,20 @@
+---
+- name: "Kolla 이미지 다운로드 (pull)"
+  hosts: stack1
+  become: yes
+  vars:
+    venv_path: "/root/kolla-venv"
+    multinode_path: "/root/multinode"
+
+  tasks:
+    - name: "컨테이너 이미지 사전 다운로드"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        kolla-ansible pull -i {{ multinode_path }}
+      args:
+        executable: /bin/bash
+      register: pull_result
+
+    - name: "이미지 다운로드 결과"
+      debug:
+        msg: "{{ pull_result.stdout_lines[-10:] }}"

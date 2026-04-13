@@ -9,7 +9,7 @@
   tasks:
     - name: "Ceph 부트스트랩"
       shell: |
-        cephadm bootstrap \
+        cephadm --image {{ local_registry }}/fxhci/ceph:v19 bootstrap \
           --mon-ip {{ storage_ip }} \
           --cluster-network {{ storage_network }} \
           --allow-fqdn-hostname \

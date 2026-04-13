@@ -12,13 +12,19 @@
       debug:
         msg: "{{ device_list.stdout_lines }}"
 
-    - name: "OSD 적용 (모든 사용 가능한 디스크)"
-      command: cephadm shell -- ceph orch apply osd --all-available-devices
+    - name: "OSD 적용 inventory 지정 디스크만"
+      command: >
+        cephadm shell -- ceph orch daemon add osd
+        {{ item }}:{{ hostvars[item]['osd_devices'] }}
+      loop:
+        - stack1
+        - stack2
+        - stack3
       register: osd_apply
 
     - name: "OSD 적용 결과"
       debug:
-        msg: "{{ osd_apply.stdout_lines }}"
+        msg: "{{ osd_apply.results | map(attribute='stdout') | list }}"
 
     - name: "OSD 생성 대기 (60초)"
       pause:

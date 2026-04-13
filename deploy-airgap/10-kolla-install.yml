@@ -20,6 +20,38 @@
         state: present
         update_cache: yes
 
+    - name: "wheel 저장 디렉토리 생성"
+      file:
+        path: /root/python-wheels
+        state: directory
+        mode: '0755'
+
+    - name: "Nexus python-wheels asset 목록 조회"
+      uri:
+        url: "https://10.250.254.1/service/rest/v1/assets?repository=python-wheels"
+        method: GET
+        user: admin
+        password: "coremax1@#"
+        force_basic_auth: yes
+        validate_certs: no
+        return_content: yes
+      register: wheel_assets
+
+    - name: "기존 wheel 파일 정리"
+      shell: find /root/python-wheels -maxdepth 1 -type f -delete
+      args:
+        executable: /bin/bash
+
+    - name: "wheel 파일 다운로드"
+      get_url:
+        url: "https://10.250.254.1/repository/python-wheels/{{ item.path | basename }}"
+        dest: "/root/python-wheels/{{ item.path | basename }}"
+        url_username: admin
+        url_password: "coremax1@#"
+        validate_certs: no
+        mode: '0644'
+      loop: "{{ (wheel_assets.json['items'] | default([])) }}"
+    
     - name: "Python 가상환경 생성"
       command: python3 -m venv {{ venv_path }}
       args:
@@ -28,28 +60,41 @@
     - name: "pip 업그레이드"
       shell: |
         source {{ venv_path }}/bin/activate
-        pip install -U pip
+        pip install --no-index --find-links /root/python-wheels pip setuptools
       args:
         executable: /bin/bash
 
-    - name: "Kolla Ansible 저장소 클론"
-      git:
-        repo: https://opendev.org/openstack/kolla-ansible
-        dest: /root/kolla-ansible
-        version: "{{ kolla_version }}"
-        force: yes
+    - name: "kolla-ansible 소스 tarball 다운로드"
+      get_url:
+        url: "https://10.250.254.1/repository/raw-hosted/kolla-ansible.tar.gz"
+        dest: /root/kolla-ansible.tar.gz
+        url_username: admin
+        url_password: "coremax1@#"
+        validate_certs: no
+        mode: '0644'
+
+    - name: "기존 kolla-ansible 디렉토리 제거"
+      file:
+        path: /root/kolla-ansible
+        state: absent
+
+    - name: "kolla-ansible 압축 해제"
+      unarchive:
+        src: /root/kolla-ansible.tar.gz
+        dest: /root/
+        remote_src: yes
 
     - name: "Kolla Ansible 설치"
       shell: |
         source {{ venv_path }}/bin/activate
-        pip install /root/kolla-ansible
+        pip install --no-index --find-links /root/python-wheels kolla-ansible bcrypt==4.0.1 python-openstackclient
       args:
         executable: /bin/bash
 
     - name: "bcrypt 버전 고정 (passlib 호환성)"
       shell: |
         source {{ venv_path }}/bin/activate
-        pip install bcrypt==4.0.1
+        pip install --no-index --find-links /root/python-wheels bcrypt==4.0.1
       args:
         executable: /bin/bash
 
@@ -71,10 +116,40 @@
         dest: /root/
         remote_src: yes
 
+    - name: "Galaxy 디렉토리 생성"
+      file:
+        path: /root/galaxy
+        state: directory
+        mode: '0755'
+
+    - name: "기존 Galaxy tarball 정리"
+      shell: find /root/galaxy -maxdepth 1 -type f -name '*.tar.gz' -delete
+      args:
+        executable: /bin/bash
+
+    - name: "Galaxy tarball 다운로드"
+      get_url:
+        url: "https://10.250.254.1/repository/raw-hosted/galaxy/{{ item }}"
+        dest: "/root/galaxy/{{ item }}"
+        url_username: admin
+        url_password: "coremax1@#"
+        validate_certs: no
+        mode: '0644'
+      loop:
+        - openstack-kolla-1.0.0.tar.gz
+        - ansible-netcommon-8.4.0.tar.gz
+        - ansible-posix-2.1.0.tar.gz
+        - ansible-utils-6.0.1.tar.gz
+        - community-crypto-3.1.1.tar.gz
+        - community-docker-4.8.7.tar.gz
+        - community-general-11.4.6.tar.gz
+        - community-library_inventory_filtering_v1-1.1.5.tar.gz
+        - containers-podman-1.19.1.tar.gz
+
     - name: "Ansible Galaxy 의존성 설치"
       shell: |
         source {{ venv_path }}/bin/activate
-        kolla-ansible install-deps
+        ansible-galaxy collection install -p /root/.ansible/collections /root/galaxy/*.tar.gz --force
       args:
         executable: /bin/bash
 
@@ -138,32 +213,4 @@
         fi
       args:
         executable: /bin/bash
-
-- name: "Skyline 브랜딩 파일 배포"
-  hosts: all
-  become: yes
-
-  vars:
-    branding_src: "/root/openstack/deploy-nontenant/skyline-branding"
-    branding_dest: "/opt/skyline-branding"
-
-  tasks:
-    - name: "브랜딩 디렉토리 생성"
-      file:
-        path: "{{ branding_dest }}"
-        state: directory
-        mode: "0755"
-
-    - name: "브랜딩 파일 복사"
-      copy:
-        src: "{{ branding_src }}/{{ item }}"
-        dest: "{{ branding_dest }}/{{ item }}"
-        mode: "0644"
-      loop:
-        - favicon.ico
-        - logo.png
-        - loginRightLogo.png
-        - cloud-logo.svg
-        - cloud-logo-white.svg
-        - index.html
 

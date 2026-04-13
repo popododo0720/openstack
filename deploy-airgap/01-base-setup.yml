@@ -22,7 +22,33 @@
           - lsb-release
           - isc-dhcp-client
           - apt-transport-https
+          - nfs-common
         state: present
+
+    - name: 기본 Ubuntu NTP pool 비활성화
+      lineinfile:
+        path: /etc/chrony/chrony.conf
+        regexp: '^pool\s+.*$'
+        state: absent
+
+    - name: 사이트 NTP 소스 파일 배포
+      copy:
+        dest: /etc/chrony/sources.d/site-ntp.sources
+        mode: '0644'
+        content: |-
+          {% for server in site_ntp_servers.split() %}
+          server {{ server }} iburst prefer
+          {% endfor %}
+
+    - name: Chrony 재시작
+      service:
+        name: chrony
+        state: restarted
+        enabled: yes
+
+    - name: 시간 즉시 보정
+      shell: chronyc -a makestep || true
+      changed_when: false
 
     - name: "로케일 생성 (ko_KR, en_US)"
       shell: locale-gen ko_KR.UTF-8 en_US.UTF-8
@@ -34,4 +60,4 @@
           LANG=en_US.UTF-8
           LC_ALL=en_US.UTF-8
         dest: /etc/default/locale
-        mode: '0644'
+        mode: 0644

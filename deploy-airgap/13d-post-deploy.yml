@@ -38,7 +38,7 @@
     - name: "openstackclient 설치"
       shell: |
         source {{ venv_path }}/bin/activate
-        pip install python-openstackclient
+        pip install --no-index --find-links /root/python-wheels python-openstackclient
       args:
         executable: /bin/bash
       register: osc_install
