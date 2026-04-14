@@ -60,5 +60,6 @@ venv/
 **/*credential*
 !.gitignore
 
-
+images/
+deploy-airgap/terraform/images/
 src/kolla-ansible

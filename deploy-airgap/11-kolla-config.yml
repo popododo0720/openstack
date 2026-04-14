@@ -345,6 +345,12 @@
           [neutron-server:children]
           control
 
+          [neutron-periodic-worker:children]
+          control
+
+          [neutron-rpc-server:children]
+          control
+
           [neutron-dhcp-agent:children]
           neutron
 
@@ -373,6 +379,9 @@
           [neutron-ovn-agent:children]
           compute
           network
+
+          [neutron-ovn-maintenance-worker:children]
+          control
 
           # Cinder
           [cinder-api:children]
@@ -851,4 +860,3 @@
         regexp: '^{{ kolla_external_vip_address | regex_escape }}\s+{{ kolla_external_fqdn | regex_escape }}$'
         line: "{{ kolla_external_vip_address }} {{ kolla_external_fqdn }}"
         state: present
-

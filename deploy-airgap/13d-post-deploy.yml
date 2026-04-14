@@ -26,6 +26,60 @@
     venv_path: "/root/kolla-venv"
 
   tasks:
+    - name: "python wheelhouse 존재 확인"
+      stat:
+        path: /root/python-wheels/constraints-2025.1.txt
+      register: python_wheels_check
+
+    - name: "stack1 wheelhouse 아카이브 생성"
+      archive:
+        path: /root/python-wheels
+        dest: /root/python-wheels.tar.gz
+        format: gz
+      delegate_to: stack1
+      run_once: true
+
+    - name: "stack1 wheelhouse 아카이브 읽기"
+      slurp:
+        src: /root/python-wheels.tar.gz
+      delegate_to: stack1
+      run_once: true
+      register: python_wheels_archive
+
+    - name: "누락 노드에 wheelhouse 아카이브 배포"
+      copy:
+        content: "{{ python_wheels_archive.content | b64decode }}"
+        dest: /root/python-wheels.tar.gz
+        mode: '0644'
+      when:
+        - inventory_hostname != 'stack1'
+        - not python_wheels_check.stat.exists
+
+    - name: "누락 노드 기존 wheelhouse 정리"
+      file:
+        path: /root/python-wheels
+        state: absent
+      when:
+        - inventory_hostname != 'stack1'
+        - not python_wheels_check.stat.exists
+
+    - name: "누락 노드에 wheelhouse 압축 해제"
+      unarchive:
+        src: /root/python-wheels.tar.gz
+        dest: /root/
+        remote_src: true
+      when:
+        - inventory_hostname != 'stack1'
+        - not python_wheels_check.stat.exists
+
+    - name: "누락 노드 wheelhouse 아카이브 정리"
+      file:
+        path: /root/python-wheels.tar.gz
+        state: absent
+      when:
+        - inventory_hostname != 'stack1'
+        - not python_wheels_check.stat.exists
+
     - name: "kolla venv 존재 확인"
       stat:
         path: "{{ venv_path }}/bin/activate"
@@ -38,7 +92,9 @@
     - name: "openstackclient 설치"
       shell: |
         source {{ venv_path }}/bin/activate
-        pip install --no-index --find-links /root/python-wheels python-openstackclient
+        pip install --no-index --find-links /root/python-wheels \
+          -c /root/python-wheels/constraints-2025.1.txt \
+          "python-openstackclient==7.5.0"
       args:
         executable: /bin/bash
       register: osc_install
@@ -62,11 +118,30 @@
       run_once: true
       register: admin_openrc_raw
 
+    - name: "stack1의 Kolla CA root 인증서 읽기"
+      slurp:
+        src: /etc/kolla/certificates/ca/root.crt
+      delegate_to: stack1
+      run_once: true
+      register: kolla_ca_root_raw
+
     - name: "admin-openrc.sh 배포 (3대)"
       copy:
         content: "{{ admin_openrc_raw.content | b64decode }}"
         dest: /etc/kolla/admin-openrc.sh
         mode: '0600'
+
+    - name: "Kolla 인증서 디렉토리 생성"
+      file:
+        path: /etc/kolla/certificates/ca
+        state: directory
+        mode: '0755'
+
+    - name: "Kolla CA root 인증서 배포 (3대)"
+      copy:
+        content: "{{ kolla_ca_root_raw.content | b64decode }}"
+        dest: /etc/kolla/certificates/ca/root.crt
+        mode: '0640'
 
     - name: "activate-openstack 스크립트 생성"
       copy:

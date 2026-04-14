@@ -46,7 +46,7 @@ kolla_base_distro: "ubuntu"
 openstack_release: "2025.1"
 
 # Docker image tag used by default.
-openstack_tag: "master-ubuntu-noble"
+openstack_tag: "2025.1-ubuntu-noble"
 
 # Suffix applied to openstack_release to generate openstack_tag.
 openstack_tag_suffix: ""
@@ -429,8 +429,7 @@ enable_neutron_provider_networks: "yes"
 #enable_placement: "{{ enable_nova | bool or enable_zun | bool }}"
 enable_prometheus: "yes"
 #enable_proxysql: "yes"
-enable_redis: "no"
-enable_valkey: "yes"
+enable_redis: "yes"
 enable_skyline: "yes"
 #enable_swift: "no"
 #enable_swift_s3api: "no"
@@ -929,12 +928,3 @@ prometheus_ceph_mgr_exporter_endpoints:
 
 masakari_hostmonitor_extra_volumes:
   - "hacluster_pacemaker:/var/lib/pacemaker:ro"
-
-skyline_console_extra_volumes:
-  - "/opt/skyline-branding/favicon.ico:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/favicon.ico:ro"
-  - "/opt/skyline-branding/logo.png:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/asset/image/logo.png:ro"
-  - "/opt/skyline-branding/loginRightLogo.png:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/asset/image/loginRightLogo.png:ro"
-  - "/opt/skyline-branding/cloud-logo.svg:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/asset/image/cloud-logo.svg:ro"
-  - "/opt/skyline-branding/cloud-logo-white.svg:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/asset/image/cloud-logo-white.svg:ro"
-  - "/opt/skyline-branding/index.html:/var/lib/kolla/venv/lib/python3/site-packages/skyline_console/static/index.html:ro"
-

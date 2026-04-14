@@ -10,7 +10,7 @@
     - name: "kolla-ansible prechecks 실행"
       shell: |
         source {{ venv_path }}/bin/activate
-        kolla-ansible prechecks -i {{ multinode_path }}
+        kolla-ansible prechecks -i {{ multinode_path }}  2>&1 | tee /root/kolla-precheck.log
       args:
         executable: /bin/bash
       register: prechecks_result
