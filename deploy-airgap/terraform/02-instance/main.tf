@@ -7,7 +7,6 @@ resource "openstack_compute_instance_v2" "test" {
   flavor_id       = data.openstack_compute_flavor_v2.small.id
   key_pair        = "test-keypair"
   security_groups = [data.openstack_networking_secgroup_v2.test.name]
-  user_data       = file("${path.module}/../scripts/alloy-bootstrap.sh")
 
   network {
     uuid = data.openstack_networking_network_v2.external.id
@@ -42,7 +41,6 @@ resource "openstack_compute_instance_v2" "vol_boot" {
   flavor_id       = data.openstack_compute_flavor_v2.small.id
   key_pair        = "test-keypair"
   security_groups = [data.openstack_networking_secgroup_v2.test.name]
-  user_data       = file("${path.module}/../scripts/alloy-bootstrap.sh")
 
   block_device {
     uuid                  = openstack_blockstorage_volume_v3.boot.id

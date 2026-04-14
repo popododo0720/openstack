@@ -30,6 +30,37 @@ extract_cidr_suffix() {
     fi
 }
 
+inventory_get() {
+    local key="$1"
+    awk -F= -v k="$key" '$1 == k {print $2}' "$INVENTORY_FILE" | tail -n 1
+}
+
+inventory_get_required() {
+    local key="$1"
+    local value
+    value="$(inventory_get "$key")"
+    if [ -z "$value" ]; then
+        echo "inventory.ini 에 $key 값이 없습니다." >&2
+        exit 1
+    fi
+    echo "$value"
+}
+
+yaml_flow_list_from_words() {
+    local raw="$1"
+    local out="["
+    local first=1
+    for item in $raw; do
+        if [ $first -eq 0 ]; then
+            out+=", "
+        fi
+        out+="$item"
+        first=0
+    done
+    out+="]"
+    echo "$out"
+}
+
 while IFS= read -r line; do
     [[ -z "$line" || "$line" =~ ^# || "$line" =~ ^\[ ]] && continue
     [[ "$line" != stack* ]] && continue
@@ -43,20 +74,24 @@ while IFS= read -r line; do
     EXTERNAL_IPS+=("$(extract_value external_ip "$line")")
 done < "$INVENTORY_FILE"
 
-MANAGEMENT_IF="eno2np1"
-EXTERNAL_IF="enp216s0f0"
-NEUTRON_EXTERNAL_IF="$(awk -F= '$1 == "neutron_external_interface" {print $2}' "$INVENTORY_FILE")"
-TUNNEL_IF="enp216s0f2"
-INTERNAL_IF="$(awk -F= '$1 == "network_interface" {print $2}' "$INVENTORY_FILE")"
-STORAGE_IF="$(awk -F= '$1 == "storage_interface" {print $2}' "$INVENTORY_FILE")"
-EXTERNAL_GATEWAY="$(awk -F= '$1 == "external_network" {split($2, a, "."); print a[1] "." a[2] "." a[3] ".1"}' "$INVENTORY_FILE")"
-DNS_SERVERS="[1.1.1.1,8.8.8.8]"
+MANAGEMENT_IF="$(inventory_get_required management_interface)"
+EXTERNAL_IF="$(inventory_get_required external_interface)"
+NEUTRON_EXTERNAL_IF="$(inventory_get_required neutron_external_interface)"
+TUNNEL_IF="$(inventory_get tunnel_interface)"
+INTERNAL_IF="$(inventory_get_required network_interface)"
+STORAGE_IF="$(inventory_get_required storage_interface)"
+EXTERNAL_GATEWAY="$(inventory_get external_gateway)"
+if [ -z "$EXTERNAL_GATEWAY" ]; then
+    EXTERNAL_GATEWAY="$(awk -F= '$1 == "external_network" {split($2, a, "."); print a[1] "." a[2] "." a[3] ".1"}' "$INVENTORY_FILE")"
+fi
+DNS_SERVERS="$(yaml_flow_list_from_words "$(inventory_get_required site_dns_servers)")"
 
 MANAGEMENT_CIDR="$(extract_cidr_suffix management_network)"
 STORAGE_CIDR="$(extract_cidr_suffix storage_network)"
 INTERNAL_CIDR="$(extract_cidr_suffix internal_network)"
 TUNNEL_CIDR="$(extract_cidr_suffix tunnel_network)"
 EXTERNAL_CIDR="$(extract_cidr_suffix external_network)"
+TUNNEL_NETWORK="$(inventory_get tunnel_network)"
 
 OSD_DEVICES_RAW="$(awk -F= '$1 == "osd_devices" {print $2}' "$INVENTORY_FILE")"
 IFS=',' read -r -a OSD_DEVICES <<< "$OSD_DEVICES_RAW"
@@ -110,6 +145,18 @@ for i in "${!HOSTS[@]}"; do
     internal_ip=${INTERNAL_IPS[$i]}
     tunnel_ip=${TUNNEL_IPS[$i]}
     external_ip=${EXTERNAL_IPS[$i]}
+    tunnel_block=""
+
+    if [ -n "$TUNNEL_IF" ] && [ -n "$TUNNEL_NETWORK" ] && [ -n "$tunnel_ip" ]; then
+        tunnel_block=$(cat <<EOF
+    ${TUNNEL_IF}:
+      dhcp4: false
+      dhcp6: false
+      addresses:
+        - ${tunnel_ip}${TUNNEL_CIDR}
+EOF
+)
+    fi
 
     echo "  → $name ($host) cloud-init netplan 덮어쓰기"
     ssh -o StrictHostKeyChecking=no root@"$host" "cat > /etc/netplan/50-cloud-init.yaml <<NETPLAN
@@ -135,11 +182,7 @@ network:
     ${NEUTRON_EXTERNAL_IF}:
       dhcp4: false
       dhcp6: false
-    ${TUNNEL_IF}:
-      dhcp4: false
-      dhcp6: false
-      addresses:
-        - ${tunnel_ip}${TUNNEL_CIDR}
+${tunnel_block}
     ${INTERNAL_IF}:
       dhcp4: false
       dhcp6: false

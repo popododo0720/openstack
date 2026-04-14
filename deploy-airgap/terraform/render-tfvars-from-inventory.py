@@ -96,19 +96,21 @@ def main() -> None:
         "external_allocation_pools": parse_pools(inv.get("terraform_external_allocation_pools"), external_cidr),
     }
 
-    internal_cidr = inv.get("terraform_internal_network_cidr", "10.40.0.0/24")
     tf03 = {
         **common,
         "internal_network_name": inv.get("terraform_internal_network_name", "internal-net"),
         "internal_subnet_name": inv.get("terraform_internal_subnet_name", "internal-subnet"),
-        "internal_network_cidr": internal_cidr,
-        "internal_gateway_ip": inv.get("terraform_internal_gateway_ip", first_host(internal_cidr)),
-        "internal_dns": split_words(inv.get("terraform_internal_dns")) or site_dns,
         "router_name": inv.get("terraform_router_name", "main-router"),
         "instance_name": inv.get("terraform_internal_fip_instance_name", "internal-fip-vm-1"),
-        "fixed_ip": inv.get("terraform_internal_fixed_ip", host_offset(internal_cidr, 20)),
         "floating_ip_pool": inv.get("terraform_floating_ip_pool", "external-net"),
     }
+
+    internal_cidr = inv.get("terraform_internal_network_cidr") or inv.get("tunnel_network")
+    if internal_cidr:
+        tf03["internal_network_cidr"] = internal_cidr
+        tf03["internal_gateway_ip"] = inv.get("terraform_internal_gateway_ip", first_host(internal_cidr))
+        tf03["internal_dns"] = split_words(inv.get("terraform_internal_dns")) or site_dns
+        tf03["fixed_ip"] = inv.get("terraform_internal_fixed_ip", host_offset(internal_cidr, 20))
 
     write_json(TF_ROOT / "01-base" / "zz_inventory.auto.tfvars.json", tf01)
     write_json(TF_ROOT / "02-instance" / "zz_inventory.auto.tfvars.json", common)
